@@ -326,13 +326,13 @@ async fn list_remote_backups(
     let save_names = if let Some(sn) = save_name {
         vec![sn]
     } else {
-        client.list_child_dirs(&format!("{root}/v1")).await.map_err(|e| e.to_string())?
+        client.list_child_dirs(&format!("{root}/v1")).await.unwrap_or_default()
     };
     log::info!("[list_remote_backups] save_names={:?}", save_names);
 
     let mut out = Vec::new();
     for sn in save_names {
-        let backups = client.list_child_dirs(&format!("{root}/v1/{sn}")).await.map_err(|e| e.to_string())?;
+        let backups = client.list_child_dirs(&format!("{root}/v1/{sn}")).await.unwrap_or_default();
         for bid in backups {
             if let Ok(m) = fetch_manifest(&client, &webdav_cfg.remote_root, &sn, &bid).await {
                 out.push(RemoteBackupVersion {
