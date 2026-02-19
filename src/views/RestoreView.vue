@@ -167,6 +167,20 @@ const downloadDetail = computed(() => {
   return `${formatSize(bytesDone)} / ${formatSize(bytesTotal)}${speed}`;
 });
 
+type VerifyState = "none" | "checking" | "ok" | "fail";
+function verifyState(target: "download" | "decompress"): VerifyState {
+  if (!task.value) return "none";
+  const p = task.value.phase;
+  if (p === `verify_${target}`) return "checking";
+  if (p === `verify_${target}_ok`) return "ok";
+  if (p === `verify_${target}_fail`) return "fail";
+  const order = ["download", "verify_download", "verify_download_ok", "decrypt", "decompress", "verify_decompress", "verify_decompress_ok", "done"];
+  const curIdx = order.indexOf(p);
+  const okIdx = order.indexOf(`verify_${target}_ok`);
+  if (curIdx > okIdx) return "ok";
+  return "none";
+}
+
 // ── 通用工具 ──
 function backupKey(b: RemoteBackup) {
   return `${b.saveName}::${b.backupId}`;
@@ -311,7 +325,27 @@ function chunkCount(b: RemoteBackup) {
           <i v-else :class="p.icon" style="color:#4a566b"></i>
         </div>
         <div class="phase-info">
-          <span class="phase-label">{{ p.label }}</span>
+          <span class="phase-label">
+            {{ p.label }}
+            <n-tag v-if="p.key === 'download' && verifyState('download') === 'checking'" size="tiny" round type="info" class="verify-tag">
+              <i class="fas fa-spinner spinner-icon"></i> 校验中
+            </n-tag>
+            <n-tag v-else-if="p.key === 'download' && verifyState('download') === 'ok'" size="tiny" round type="success" class="verify-tag">
+              <i class="fas fa-check"></i> 校验通过
+            </n-tag>
+            <n-tag v-else-if="p.key === 'download' && verifyState('download') === 'fail'" size="tiny" round type="error" class="verify-tag">
+              <i class="fas fa-times"></i> 校验失败
+            </n-tag>
+            <n-tag v-if="p.key === 'decompress' && verifyState('decompress') === 'checking'" size="tiny" round type="info" class="verify-tag">
+              <i class="fas fa-spinner spinner-icon"></i> 校验中
+            </n-tag>
+            <n-tag v-else-if="p.key === 'decompress' && verifyState('decompress') === 'ok'" size="tiny" round type="success" class="verify-tag">
+              <i class="fas fa-check"></i> 校验通过
+            </n-tag>
+            <n-tag v-else-if="p.key === 'decompress' && verifyState('decompress') === 'fail'" size="tiny" round type="error" class="verify-tag">
+              <i class="fas fa-times"></i> 校验失败
+            </n-tag>
+          </span>
           <span v-if="p.key === 'download' && phaseState('download') === 'active' && downloadDetail"
             class="phase-detail">{{ downloadDetail }}</span>
         </div>
@@ -439,7 +473,8 @@ function chunkCount(b: RemoteBackup) {
 .phase-step.stopped { opacity: 1; background: rgba(229,115,115,0.08); }
 .phase-icon { width: 18px; text-align: center; font-size: 14px; flex-shrink: 0; }
 .phase-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
-.phase-label { font-size: 13px; color: var(--text); }
+.phase-label { font-size: 13px; color: var(--text); display: flex; align-items: center; gap: 6px; }
+.verify-tag i { margin-right: 3px; font-size: 10px; }
 .phase-detail { font-size: 11px; color: var(--text-muted); }
 .error-msg { margin-top: 10px; font-size: 12px; color: #e57373; }
 </style>

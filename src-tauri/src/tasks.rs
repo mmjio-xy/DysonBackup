@@ -378,9 +378,12 @@ pub async fn run_restore_task(
     }
 
     // 3. 校验整体 payload SHA256
+    emit_progress(&app, &task_id, "verify_download", 62, 0, 0, "Verifying download checksum", 0);
     if sha256_hex(&payload) != manifest.payload_sha256 {
+        emit_progress(&app, &task_id, "verify_download_fail", 62, 0, 0, "Download checksum mismatch", 0);
         return Err(anyhow!("Payload checksum mismatch"));
     }
+    emit_progress(&app, &task_id, "verify_download_ok", 63, 0, 0, "Download checksum verified", 0);
 
     // 4. 解密（若加密）— 兼容旧整体加密和新分段加密
     if manifest.encrypted {
@@ -413,9 +416,12 @@ pub async fn run_restore_task(
     drop(payload);
     let restored_sha = hex::encode(hasher.finalize());
     info!("[restore:{}] decompressed to {} bytes", task_id, restored.len());
+    emit_progress(&app, &task_id, "verify_decompress", 88, 0, 0, "Verifying decompressed checksum", 0);
     if restored_sha != manifest.original_sha256 {
+        emit_progress(&app, &task_id, "verify_decompress_fail", 88, 0, 0, "Decompressed checksum mismatch", 0);
         return Err(anyhow!("Restored file checksum mismatch"));
     }
+    emit_progress(&app, &task_id, "verify_decompress_ok", 90, 0, 0, "Decompressed checksum verified", 0);
 
     // 6. 写入目标文件，按冲突策略处理同名文件
     let rel = sanitize_relative_path(&manifest.source_relative_path)?;
