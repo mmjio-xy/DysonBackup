@@ -2,29 +2,30 @@ name: Release
 
 on:
   push:
-    branches:
-      - master
+    tags:
+      - "v[0-9]+.*"
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
-  release-please:
+  changelog:
     runs-on: ubuntu-latest
     outputs:
-      release_created: ${{ steps.release.outputs.release_created }}
-      tag_name: ${{ steps.release.outputs.tag_name }}
+      changelog: ${{ steps.cliff.outputs.content }}
     steps:
-      - uses: googleapis/release-please-action@v4
-        id: release
+      - uses: actions/checkout@v4
         with:
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
+          fetch-depth: 0
 
-  build-tauri:
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+      - name: Generate changelog
+        id: cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          args: --latest --strip header
+
+  build:
+    needs: changelog
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -43,14 +44,15 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ needs.release-please.outputs.tag_name }}
+          tagName: ${{ github.ref_name }}
+          releaseName: "DysonBackup ${{ github.ref_name }}"
+          releaseBody: ${{ needs.changelog.outputs.changelog }}
           updaterJsonPreferNsis: true
 
       - name: Create portable zip
         shell: pwsh
         run: |
-          $tag = "${{ needs.release-please.outputs.tag_name }}"
-          $version = $tag.TrimStart("v")
+          $version = "${{ github.ref_name }}".TrimStart("v")
           $exe = "src-tauri/target/release/dysonbackup.exe"
           $zip = "dysonbackup_${version}_x64_portable.zip"
           Compress-Archive -Path $exe -DestinationPath $zip
@@ -60,4 +62,4 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release upload ${{ needs.release-please.outputs.tag_name }} ${{ env.ZIP_NAME }}
+          gh release upload ${{ github.ref_name }} ${{ env.ZIP_NAME }}
