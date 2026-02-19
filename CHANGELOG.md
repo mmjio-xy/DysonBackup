@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.2](https://github.com/mmjio-xy/DysonBackup/compare/dysonbackup-v0.1.1...dysonbackup-v0.1.2) (2026-02-19)
+
+
+### Bug Fixes
+
+* **ci:** 合并构建任务到 release-please workflow ([c2c0f24](https://github.com/mmjio-xy/DysonBackup/commit/c2c0f24edd3ce11bed7edd5b91b46a46803524ba))
+
 ## [0.1.1](https://github.com/mmjio-xy/DysonBackup/compare/dysonbackup-v0.1.0...dysonbackup-v0.1.1) (2026-02-19)
 
 
