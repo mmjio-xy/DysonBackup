@@ -1,7 +1,8 @@
 <script setup lang="ts">
-import { ref } from "vue";
+import { ref, onMounted } from "vue";
 import { NConfigProvider, NButton, NScrollbar } from "naive-ui";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getVersion } from "@tauri-apps/api/app";
 import { useTheme } from "./composables/useTheme";
 import { useAppState } from "./composables/useAppState";
 import OverviewView from "./views/OverviewView.vue";
@@ -30,6 +31,8 @@ const tabs: { key: TabKey; label: string; icon: string }[] = [
 ];
 
 const appWindow = getCurrentWindow();
+const appVersion = ref("");
+onMounted(async () => { appVersion.value = await getVersion(); });
 </script>
 
 <template>
@@ -40,7 +43,7 @@ const appWindow = getCurrentWindow();
         <div class="titlebar-title" data-tauri-drag-region>
           <i class="fas fa-cloud-sun title-icon"></i>
           <span>戴森球计划 · 存档备份</span>
-          <span class="version">v0.1-alpha</span>
+          <span class="version">v{{ appVersion }}</span>
         </div>
         <div class="titlebar-btns">
           <n-button text size="small" class="theme-btn" @click="toggle">
