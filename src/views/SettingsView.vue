@@ -3,7 +3,7 @@ import { ref, onMounted } from "vue";
 import { NCard, NButton, NInput, NSwitch, NFormItem, NModal, NSpin, NCheckbox, NTabs, NTabPane, NSelect } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
 
-const activeTab = ref("webdav");
+const activeTab = ref("general");
 const logSize = ref(0);
 const showClearConfirm = ref(false);
 
@@ -38,6 +38,8 @@ defineProps<{
   decryptionPassword: string;
   debugMode: boolean;
   closeAction: string;
+  compressEnabled: boolean;
+  compressLevel: number;
 }>();
 
 const emit = defineEmits<{
@@ -52,6 +54,7 @@ const emit = defineEmits<{
   "update:decryptionPassword": [v: string];
   "update:debugMode": [v: boolean];
   "update:closeAction": [v: string];
+  "update:compressConfig": [enabled: boolean, level: number];
   saveWebdav: [];
   saveEncryption: [];
   detectPaths: [];
@@ -102,6 +105,40 @@ async function runTest() {
   <div>
   <n-card>
     <n-tabs v-model:value="activeTab" type="line" animated>
+      <!-- 通用设置 Tab -->
+      <n-tab-pane name="general" tab="通用设置">
+        <div class="tab-content">
+          <div class="setting-row">
+            <span class="setting-label">关闭窗口时</span>
+            <n-select :value="closeAction" style="width:200px"
+              :options="[
+                { label: '每次询问', value: 'ask' },
+                { label: '最小化到托盘', value: 'minimize' },
+                { label: '直接退出', value: 'quit' },
+              ]"
+              @update:value="emit('update:closeAction', $event)" />
+          </div>
+          <div class="setting-row">
+            <span class="setting-label">压缩存档</span>
+            <n-switch :value="compressEnabled" @update:value="(v: boolean) => emit('update:compressConfig', v, compressLevel)" />
+            <span class="setting-hint">关闭后备份时不压缩，文件体积更大但速度更快</span>
+          </div>
+          <div class="setting-row" v-if="compressEnabled">
+            <span class="setting-label">压缩等级</span>
+            <n-select :value="compressLevel" style="width:200px"
+              :options="[
+                { label: '1 - 最快', value: 1 },
+                { label: '3 - 快速', value: 3 },
+                { label: '6 - 均衡（默认）', value: 6 },
+                { label: '12 - 高压缩', value: 12 },
+                { label: '19 - 最高压缩', value: 19 },
+              ]"
+              @update:value="(v: number) => emit('update:compressConfig', compressEnabled, v)" />
+            <span class="setting-hint">等级越高压缩率越好，但速度越慢</span>
+          </div>
+        </div>
+      </n-tab-pane>
+
       <!-- WebDAV Tab -->
       <n-tab-pane name="webdav" tab="WebDAV 连接">
         <div class="tab-content">
@@ -157,22 +194,6 @@ async function runTest() {
           </div>
           <div class="row-btn" style="margin-top:12px">
             <n-button type="primary" @click="emit('saveEncryption')"><i class="fas fa-save" style="margin-right:4px"></i>保存</n-button>
-          </div>
-        </div>
-      </n-tab-pane>
-
-      <!-- 通用 Tab -->
-      <n-tab-pane name="general" tab="通用">
-        <div class="tab-content">
-          <div class="setting-row">
-            <span class="setting-label">关闭窗口时</span>
-            <n-select :value="closeAction" style="width:200px"
-              :options="[
-                { label: '每次询问', value: 'ask' },
-                { label: '最小化到托盘', value: 'minimize' },
-                { label: '直接退出', value: 'quit' },
-              ]"
-              @update:value="emit('update:closeAction', $event)" />
           </div>
         </div>
       </n-tab-pane>

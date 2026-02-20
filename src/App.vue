@@ -22,13 +22,14 @@ const {
   baseUrl, username, webdavPassword, webdavPasswordSet, remoteRoot, encryptByDefault,
   debugMode, setDebugMode, saveEncryptionSettings,
   closeAction, setCloseAction,
+  compressEnabled, compressLevel, setCompressConfig,
   scanSaves, startBackup, loadBackups, restore, cancelTask, deleteBackup,
   saveWebDavConfig, detectPaths, savePath, selectRestoreDir, resolveConflict,
 } = useAppState();
 
 const tabs: { key: TabKey; label: string; icon: string }[] = [
   { key: "overview", label: "概况", icon: "fas fa-chart-pie" },
-  { key: "backup", label: "开始备份", icon: "fas fa-cloud-upload-alt" },
+  { key: "backup", label: "备份存档", icon: "fas fa-cloud-upload-alt" },
   { key: "restore", label: "恢复存档", icon: "fas fa-cloud-download-alt" },
   { key: "settings", label: "设置", icon: "fas fa-cog" },
 ];
@@ -88,6 +89,7 @@ async function handleClose(action: "minimize" | "quit") {
           :encrypted-count="encryptedCount" :chunked-count="chunkedCount" :logs="logs" />
         <BackupView v-else-if="activeTab === 'backup'"
           :files="files" :logs="logs" :task-status="taskStatus" :last-task-id="lastTaskId"
+          :encrypt-enabled="encryptByDefault" :compress-enabled="compressEnabled"
           @scan="scanSaves" @backup="startBackup" @cancel="cancelTask" />
         <RestoreView v-else-if="activeTab === 'restore'"
           :backups="backups" :restore-target-dir="restoreTargetDir"
@@ -114,11 +116,14 @@ async function handleClose(action: "minimize" | "quit") {
           @update:decryption-password="decryptionPassword = $event"
           :debug-mode="debugMode"
           :close-action="closeAction"
+          :compress-enabled="compressEnabled"
+          :compress-level="compressLevel"
           @save-webdav="saveWebDavConfig"
           @save-encryption="saveEncryptionSettings"
           @detect-paths="detectPaths" @save-path="savePath"
           @update:debug-mode="setDebugMode"
-          @update:close-action="setCloseAction" />
+          @update:close-action="setCloseAction"
+          @update:compress-config="setCompressConfig" />
           </div>
         </n-scrollbar>
       </div>

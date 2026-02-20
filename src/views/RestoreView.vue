@@ -30,6 +30,7 @@ const deleting = ref(false);
 
 // 前置检查弹窗状态
 const pendingBackup = ref<RemoteBackup | null>(null);
+const lastRestoredBackup = ref<RemoteBackup | null>(null);
 const showDirDialog = ref(false);
 const showPwDialog = ref(false);
 const inlinePw = ref("");
@@ -108,6 +109,7 @@ function onPwCancel() {
 function doRestore(pw: string | null) {
   const b = pendingBackup.value;
   if (!b || !resolvedDir.value) return;
+  lastRestoredBackup.value = b;
   emit("restore", b, resolvedDir.value, pw);
   pendingBackup.value = null;
 }
@@ -130,19 +132,25 @@ const PHASE_ORDER = RESTORE_PHASES.map(p => p.key);
 const task = computed(() => props.lastTaskId ? props.taskStatus[props.lastTaskId] ?? null : null);
 const isRestoreTask = computed(() => props.lastTaskId.startsWith("restore_"));
 
-type PhaseState = "done" | "active" | "stopped" | "pending";
+type PhaseState = "done" | "active" | "stopped" | "pending" | "skipped";
+
+const SKIPPABLE_RESTORE: Record<string, () => boolean> = {
+  decrypt: () => !lastRestoredBackup.value?.encrypted,
+  decompress: () => lastRestoredBackup.value?.compressed === false,
+};
+
 function phaseState(key: string): PhaseState {
   if (!task.value) return "pending";
   const cur = task.value.phase;
-  if (cur === "done") return "done";
+  if (cur === "done") return SKIPPABLE_RESTORE[key]?.() ? "skipped" : "done";
   const curIdx = PHASE_ORDER.indexOf(cur);
   const keyIdx = PHASE_ORDER.indexOf(key);
   if (cur === "cancelled" || cur === "failed") {
-    if (keyIdx < curIdx) return "done";
+    if (keyIdx < curIdx) return SKIPPABLE_RESTORE[key]?.() ? "skipped" : "done";
     if (keyIdx === curIdx) return "stopped";
     return "pending";
   }
-  if (keyIdx < curIdx) return "done";
+  if (keyIdx < curIdx) return SKIPPABLE_RESTORE[key]?.() ? "skipped" : "done";
   if (keyIdx === curIdx) return "active";
   return "pending";
 }
@@ -170,6 +178,7 @@ const downloadDetail = computed(() => {
 type VerifyState = "none" | "checking" | "ok" | "fail";
 function verifyState(target: "download" | "decompress"): VerifyState {
   if (!task.value) return "none";
+  if (target === "decompress" && lastRestoredBackup.value?.compressed === false) return "none";
   const p = task.value.phase;
   if (p === `verify_${target}`) return "checking";
   if (p === `verify_${target}_ok`) return "ok";
@@ -365,6 +374,7 @@ function chunkCount(b: RemoteBackup) {
       <div v-for="p in RESTORE_PHASES" :key="p.key" class="phase-step" :class="phaseState(p.key)">
         <div class="phase-icon">
           <i v-if="phaseState(p.key) === 'done'" class="fas fa-check-circle" style="color:#48b58b"></i>
+          <i v-else-if="phaseState(p.key) === 'skipped'" class="fas fa-exclamation-circle" style="color:#f0a020"></i>
           <i v-else-if="phaseState(p.key) === 'active'" class="spinner-icon fas fa-spinner" style="color:#6ea8fe"></i>
           <i v-else-if="phaseState(p.key) === 'stopped'" class="fas fa-times-circle" style="color:#e57373"></i>
           <i v-else :class="p.icon" style="color:#4a566b"></i>
@@ -372,6 +382,7 @@ function chunkCount(b: RemoteBackup) {
         <div class="phase-info">
           <span class="phase-label">
             {{ p.label }}
+            <n-tag v-if="phaseState(p.key) === 'skipped'" size="tiny" round type="warning" class="verify-tag">已跳过</n-tag>
             <n-tag v-if="p.key === 'download' && verifyState('download') === 'checking'" size="tiny" round type="info" class="verify-tag">
               <i class="fas fa-spinner spinner-icon"></i> 校验中
             </n-tag>
@@ -511,6 +522,7 @@ function chunkCount(b: RemoteBackup) {
   transition: opacity 0.2s, background 0.2s;
 }
 .phase-step.done { opacity: 0.75; }
+.phase-step.skipped { opacity: 0.65; background: rgba(240,160,32,0.06); }
 .phase-step.active { opacity: 1; background: var(--bg-active, rgba(110,168,254,0.08)); }
 .phase-step.stopped { opacity: 1; background: rgba(229,115,115,0.08); }
 .phase-icon { width: 18px; text-align: center; font-size: 14px; flex-shrink: 0; }
