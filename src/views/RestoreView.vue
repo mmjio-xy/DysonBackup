@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, computed } from "vue";
-import { NCard, NButton, NTag, NEmpty, NScrollbar, NList, NListItem, NCheckbox, NModal, NProgress, NInput } from "naive-ui";
+import { NCard, NButton, NTag, NEmpty, NScrollbar, NList, NListItem, NCheckbox, NModal, NProgress, NInput, NSelect } from "naive-ui";
 import type { ConflictFound, RemoteBackup, TaskProgress } from "../types";
 import { formatSize, formatSpeed } from "../utils/format";
 
@@ -181,39 +181,69 @@ function verifyState(target: "download" | "decompress"): VerifyState {
   return "none";
 }
 
-// ── 通用工具 ──
-function backupKey(b: RemoteBackup) {
-  return `${b.saveName}::${b.backupId}`;
+// ── 分组逻辑 ──
+const selectedVersions = ref<Record<string, string>>({});
+
+type BackupGroup = {
+  saveName: string;
+  sourceRelativePath: string;
+  versions: RemoteBackup[];
+  selectedId: string;
+};
+
+const groupedBackups = computed<BackupGroup[]>(() => {
+  const map = new Map<string, RemoteBackup[]>();
+  for (const b of props.backups) {
+    const arr = map.get(b.saveName) || [];
+    arr.push(b);
+    map.set(b.saveName, arr);
+  }
+  const groups: BackupGroup[] = [];
+  for (const [saveName, versions] of map) {
+    versions.sort((a, c) => c.createdAt.localeCompare(a.createdAt));
+    const selId = selectedVersions.value[saveName] || versions[0].backupId;
+    groups.push({ saveName, sourceRelativePath: versions[0].sourceRelativePath, versions, selectedId: selId });
+  }
+  return groups;
+});
+
+function currentBackup(g: BackupGroup): RemoteBackup {
+  return g.versions.find(v => v.backupId === g.selectedId) || g.versions[0];
 }
 
-function toggleSelect(b: RemoteBackup) {
-  const k = backupKey(b);
+function versionOptions(g: BackupGroup) {
+  return g.versions.map(v => ({
+    label: `${v.createdAt.slice(0, 16).replace("T", " ")}  (${formatSize(v.compressedSize)})`,
+    value: v.backupId,
+  }));
+}
+
+// ── 通用工具 ──
+function toggleSelect(g: BackupGroup) {
   const s = new Set(selected.value);
-  s.has(k) ? s.delete(k) : s.add(k);
+  s.has(g.saveName) ? s.delete(g.saveName) : s.add(g.saveName);
   selected.value = s;
 }
 
 const allSelected = computed(() =>
-  props.backups.length > 0 && props.backups.every(b => selected.value.has(backupKey(b)))
+  groupedBackups.value.length > 0 && groupedBackups.value.every(g => selected.value.has(g.saveName))
 );
 
 function toggleAll() {
   if (allSelected.value) {
     selected.value = new Set();
   } else {
-    selected.value = new Set(props.backups.map(backupKey));
+    selected.value = new Set(groupedBackups.value.map(g => g.saveName));
   }
 }
 
 const selectedBackups = computed(() =>
-  props.backups.filter(b => selected.value.has(backupKey(b)))
+  groupedBackups.value.filter(g => selected.value.has(g.saveName)).map(currentBackup)
 );
 
 async function confirmDelete() {
   deleting.value = true;
-  for (const b of selectedBackups.value) {
-    await props.onDelete(b.saveName, b.backupId);
-  }
+  for (const b of selectedBackups.value) await props.onDelete(b.saveName, b.backupId);
   deleting.value = false;
   showDeleteConfirm.value = false;
   selected.value = new Set();
@@ -250,30 +280,45 @@ function chunkCount(b: RemoteBackup) {
     <template v-else>
       <n-scrollbar style="max-height:calc(100vh - 340px)">
         <n-list hoverable>
-          <n-list-item v-for="b in backups" :key="backupKey(b)">
+          <n-list-item v-for="g in groupedBackups" :key="g.saveName">
             <template #prefix>
               <div class="prefix-wrap">
-                <n-checkbox :checked="selected.has(backupKey(b))" @update:checked="toggleSelect(b)" />
+                <n-checkbox :checked="selected.has(g.saveName)" @update:checked="toggleSelect(g)" />
                 <i class="fas fa-file-zipper cloud-icon"></i>
               </div>
             </template>
 
             <div class="cloud-title">
-              {{ b.sourceRelativePath || b.saveName }}
-              <n-tag v-if="b.encrypted" size="tiny" round type="warning" class="title-tag">加密</n-tag>
-              <n-tag v-if="b.chunked" size="tiny" round type="info" class="title-tag">分片</n-tag>
+              {{ g.sourceRelativePath || g.saveName }}
+              <n-tag size="tiny" round class="title-tag">{{ g.versions.length }} 个版本</n-tag>
+              <n-tag v-if="currentBackup(g).encrypted" size="tiny" round type="warning" class="title-tag">加密</n-tag>
+              <n-tag v-if="currentBackup(g).chunked" size="tiny" round type="info" class="title-tag">分片</n-tag>
             </div>
-            <div class="cloud-details">
-              <span><i class="far fa-calendar"></i> {{ b.createdAt.slice(0, 16).replace("T", " ") }}</span>
-              <span><i class="fas fa-weight-hanging"></i> {{ formatSize(b.compressedSize) }}</span>
-              <span v-if="b.chunked"><i class="fas fa-cut"></i> {{ chunkCount(b) }} 片</span>
-              <span v-if="b.encrypted" class="detail-encrypted"><i class="fas fa-lock"></i> 需要密码</span>
+
+            <div v-if="g.versions.length > 1" class="version-select">
+              <n-select size="small" :value="g.selectedId"
+                @update:value="(v: string) => selectedVersions[g.saveName] = v"
+                :options="versionOptions(g)" />
+            </div>
+            <div v-else class="cloud-details">
+              <span><i class="far fa-calendar"></i> {{ currentBackup(g).createdAt.slice(0, 16).replace("T", " ") }}</span>
+              <span><i class="fas fa-weight-hanging"></i> {{ formatSize(currentBackup(g).compressedSize) }}</span>
+            </div>
+
+            <div class="cloud-details" v-if="g.versions.length > 1">
+              <span><i class="fas fa-weight-hanging"></i> {{ formatSize(currentBackup(g).compressedSize) }}</span>
+              <span v-if="currentBackup(g).chunked"><i class="fas fa-cut"></i> {{ chunkCount(currentBackup(g)) }} 片</span>
+              <span v-if="currentBackup(g).encrypted" class="detail-encrypted"><i class="fas fa-lock"></i> 需要密码</span>
               <span v-else class="detail-plain"><i class="fas fa-unlock-alt"></i> 无加密</span>
             </div>
-            <div class="cloud-id">{{ b.backupId }}</div>
+            <div v-else class="cloud-details">
+              <span v-if="currentBackup(g).chunked"><i class="fas fa-cut"></i> {{ chunkCount(currentBackup(g)) }} 片</span>
+              <span v-if="currentBackup(g).encrypted" class="detail-encrypted"><i class="fas fa-lock"></i> 需要密码</span>
+              <span v-else class="detail-plain"><i class="fas fa-unlock-alt"></i> 无加密</span>
+            </div>
 
             <template #suffix>
-              <n-button size="small" round type="primary" @click="requestRestore(b)">
+              <n-button size="small" round type="primary" @click="requestRestore(currentBackup(g))">
                 <i class="fas fa-download" style="margin-right:4px"></i>恢复
               </n-button>
             </template>
@@ -361,7 +406,7 @@ function chunkCount(b: RemoteBackup) {
   <n-modal v-model:show="showDeleteConfirm" preset="card" title="确认删除" style="width:400px" :mask-closable="!deleting">
     <p>确定要删除以下 <b>{{ selected.size }}</b> 个云端备份吗？此操作不可撤销。</p>
     <ul class="del-list">
-      <li v-for="b in selectedBackups" :key="backupKey(b)">
+      <li v-for="b in selectedBackups" :key="b.backupId">
         {{ b.sourceRelativePath || b.saveName }} — {{ b.backupId }}
       </li>
     </ul>
@@ -438,10 +483,7 @@ function chunkCount(b: RemoteBackup) {
 .detail-encrypted { color: #f0a020; }
 .detail-plain { color: var(--text-muted); }
 
-.cloud-id {
-  color: var(--text-muted); font-size: 11px; margin-top: 3px;
-  font-family: monospace;
-}
+.version-select { margin-top: 6px; max-width: 320px; }
 
 .batch-bar {
   display: flex; align-items: center; gap: 12px;
