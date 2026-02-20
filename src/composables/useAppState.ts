@@ -36,6 +36,9 @@ export function useAppState() {
   // Debug
   const debugMode = ref(false);
 
+  // Tray
+  const closeAction = ref("ask");
+
   function addLog(line: string) {
     const t = new Date().toTimeString().slice(0, 8);
     logs.value = [`${t} ${line}`, ...logs.value].slice(0, 200);
@@ -113,6 +116,11 @@ export function useAppState() {
     debugMode.value = enabled;
   }
 
+  async function setCloseAction(action: string) {
+    await invoke("set_close_action", { action });
+    closeAction.value = action;
+  }
+
   async function saveEncryptionSettings() {
     await invoke("save_encryption_settings", {
       encryptByDefault: encryptByDefault.value,
@@ -170,6 +178,7 @@ export function useAppState() {
       debugMode?: boolean;
       encryptByDefault?: boolean;
       encryptionPasswordSet?: boolean;
+      closeAction?: string;
     }>("get_config");
     if (cfg.saveRoot) saveRoot.value = cfg.saveRoot;
     if (cfg.webdav) {
@@ -180,6 +189,7 @@ export function useAppState() {
     webdavPasswordSet.value = cfg.webdavPasswordSet ?? false;
     debugMode.value = cfg.debugMode ?? false;
     encryptByDefault.value = cfg.encryptByDefault ?? false;
+    closeAction.value = cfg.closeAction ?? "ask";
     if (cfg.encryptionPasswordSet) {
       try {
         encryptionPassword.value = await invoke<string>("get_encryption_password");
@@ -203,6 +213,13 @@ export function useAppState() {
     await listen<ConflictFound>("conflict_found", (e) => {
       conflictState.value = e.payload;
     });
+    // // 文件变更防抖刷新（暂时禁用）
+    // let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    // await listen<FileChanged>("file_changed", (e) => {
+    //   addLog(`文件变更: ${e.payload.kind} ${e.payload.path}`);
+    //   if (debounceTimer) clearTimeout(debounceTimer);
+    //   debounceTimer = setTimeout(() => scanSaves(), 2000);
+    // });
     await scanSaves();
     await loadBackups();
   });
@@ -214,6 +231,7 @@ export function useAppState() {
     restoreTargetDir, decryptionPassword, useEncryptPwForRestore, conflictState,
     totalLocalSize, totalCloudSize, encryptedCount, chunkedCount, latestBackup, runningTasks,
     debugMode, setDebugMode, saveEncryptionSettings,
+    closeAction, setCloseAction,
     detectPaths, savePath, scanSaves, saveWebDavConfig, testWebDav, startBackup, loadBackups,
     restore, cancelTask, deleteBackup, selectRestoreDir, resolveConflict,
   };

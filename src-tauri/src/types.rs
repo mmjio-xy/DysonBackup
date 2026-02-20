@@ -1,6 +1,7 @@
 //! 全局数据类型定义
 //! 包含所有跨模块共享的结构体、枚举和应用状态
 
+// use notify::RecommendedWatcher;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::atomic::AtomicBool;
@@ -19,7 +20,14 @@ pub struct AppConfig {
     pub debug_mode: bool,
     #[serde(default)]
     pub encrypt_by_default: bool,
+    /// "ask" | "minimize" | "quit"
+    #[serde(default = "default_close_action")]
+    pub close_action: String,
+    // #[serde(default)]
+    // pub auto_watch: bool,
 }
+
+fn default_close_action() -> String { "ask".to_string() }
 
 /// WebDAV 连接配置（密码不存此处，存系统 keyring）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +50,8 @@ pub struct AppState {
     pub task_flags: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// 冲突询问通道，key 为 task_id
     pub conflict_channels: Mutex<HashMap<String, oneshot::Sender<String>>>,
+    // /// 文件变更监听器
+    // pub file_watcher: Mutex<Option<RecommendedWatcher>>,
 }
 
 // ── Tauri 命令 I/O 类型 ───────────────────────────────────────
@@ -84,6 +94,8 @@ pub struct ConfigResp {
     pub debug_mode: bool,
     pub encrypt_by_default: bool,
     pub encryption_password_set: bool,
+    pub close_action: String,
+    // pub auto_watch: bool,
 }
 
 /// test_webdav_connection 的分步检测结果
@@ -174,6 +186,14 @@ pub struct TaskDone {
     pub success: bool,
     pub error: Option<String>,
 }
+
+// /// 文件变更事件（后端 → 前端）
+// #[derive(Debug, Clone, Serialize)]
+// #[serde(rename_all = "camelCase")]
+// pub struct FileChanged {
+//     pub path: String,
+//     pub kind: String,
+// }
 
 // ── 远端存储清单 ──────────────────────────────────────────────
 
