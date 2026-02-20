@@ -23,11 +23,17 @@ pub struct AppConfig {
     /// "ask" | "minimize" | "quit"
     #[serde(default = "default_close_action")]
     pub close_action: String,
+    #[serde(default = "default_true")]
+    pub compress_enabled: bool,
+    #[serde(default = "default_compress_level")]
+    pub compress_level: i32,
     // #[serde(default)]
     // pub auto_watch: bool,
 }
 
 fn default_close_action() -> String { "ask".to_string() }
+fn default_true() -> bool { true }
+fn default_compress_level() -> i32 { 6 }
 
 /// WebDAV 连接配置（密码不存此处，存系统 keyring）
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +101,8 @@ pub struct ConfigResp {
     pub encrypt_by_default: bool,
     pub encryption_password_set: bool,
     pub close_action: String,
+    pub compress_enabled: bool,
+    pub compress_level: i32,
     // pub auto_watch: bool,
 }
 
@@ -119,6 +127,10 @@ pub struct BackupRequest {
     pub source_relative_path: String,
     pub use_encryption: bool,
     pub encryption_password: Option<String>,
+    #[serde(default = "default_true")]
+    pub use_compression: bool,
+    #[serde(default = "default_compress_level")]
+    pub compression_level: i32,
 }
 
 /// 文件冲突处理策略
@@ -150,6 +162,7 @@ pub struct RemoteBackupVersion {
     pub compressed_size: u64,
     pub encrypted: bool,
     pub chunked: bool,
+    pub compressed: bool,
     pub source_relative_path: String,
 }
 
@@ -216,6 +229,8 @@ pub struct ManifestV1 {
     pub payload_sha256: String,
     pub original_sha256: String,
     pub zstd_level: i32,
+    #[serde(default = "default_true")]
+    pub compressed: bool,
 }
 
 /// AES-256-GCM 加密元数据，存入 manifest

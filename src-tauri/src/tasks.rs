@@ -157,20 +157,23 @@ pub async fn run_backup_task(
     req: BackupRequest,
     flag: Arc<AtomicBool>,
 ) -> Result<()> {
-    info!("Backup task {} started: file={} save_name={} encrypt={}", task_id, req.local_file_path, req.save_name, req.use_encryption);
+    info!("Backup task {} started: file={} save_name={} encrypt={} compress={}", task_id, req.local_file_path, req.save_name, req.use_encryption, req.use_compression);
 
-    // 1+2. 流式读文件 → 增量 SHA256 → zstd 流式压缩，一趟完成
+    // 1+2. 流式读文件 → 增量 SHA256 → 可选 zstd 流式压缩
     should_cancel(&flag)?;
-    emit_progress(&app, &task_id, "compress", 5, 0, 0, "Reading & compressing", 0);
 
     let file = File::open(&req.local_file_path)
         .with_context(|| format!("Failed to open file: {}", req.local_file_path))?;
     let original_size = file.metadata()?.len();
     let mut reader = BufReader::with_capacity(64 * 1024, file);
     let mut hasher = Sha256::new();
-    let mut compressed = Vec::new();
+    let mut payload_data = Vec::new();
+    let zstd_level = if req.use_compression { req.compression_level } else { 0 };
+
+    // 读取文件 + SHA256
+    emit_progress(&app, &task_id, "read", 5, 0, 0, "Reading file", 0);
+    let mut raw_data = Vec::new();
     {
-        let mut encoder = zstd::Encoder::new(&mut compressed, 6)?;
         let mut buf = [0u8; 64 * 1024];
         let mut bytes_read = 0u64;
         loop {
@@ -178,19 +181,30 @@ pub async fn run_backup_task(
             let n = reader.read(&mut buf)?;
             if n == 0 { break; }
             hasher.update(&buf[..n]);
-            encoder.write_all(&buf[..n])?;
+            raw_data.extend_from_slice(&buf[..n]);
             bytes_read += n as u64;
-            let pct = 5 + ((bytes_read as f64 / original_size.max(1) as f64) * 25.0) as u8;
-            emit_progress(&app, &task_id, "compress", pct.min(30), bytes_read, original_size, "Reading & compressing", 0);
+            let pct = 5 + ((bytes_read as f64 / original_size.max(1) as f64) * 15.0) as u8;
+            emit_progress(&app, &task_id, "read", pct.min(20), bytes_read, original_size, "Reading file", 0);
         }
-        encoder.finish()?;
     }
+
+    // 压缩（可选）
+    if req.use_compression {
+        emit_progress(&app, &task_id, "compress", 22, 0, 0, "Compressing", 0);
+        let mut encoder = zstd::Encoder::new(&mut payload_data, req.compression_level)?;
+        encoder.write_all(&raw_data)?;
+        encoder.finish()?;
+        emit_progress(&app, &task_id, "compress", 30, 0, 0, "Compressed", 0);
+    } else {
+        payload_data = raw_data;
+    }
+
     let original_sha = hex::encode(hasher.finalize());
-    info!("[backup:{}] streamed {} → {} bytes, sha256={}", task_id, original_size, compressed.len(), original_sha);
+    info!("[backup:{}] streamed {} → {} bytes, sha256={}", task_id, original_size, payload_data.len(), original_sha);
 
     // 3. 分段 AES-256-GCM 加密（可选）
     should_cancel(&flag)?;
-    let mut payload = compressed;
+    let mut payload = payload_data;
     let mut encryption_meta = None;
     if req.use_encryption {
         let password = req.encryption_password.as_deref()
@@ -286,7 +300,8 @@ pub async fn run_backup_task(
         chunks,
         payload_sha256: payload_sha,
         original_sha256: original_sha,
-        zstd_level: 6,
+        zstd_level,
+        compressed: req.use_compression,
     };
     emit_progress(&app, &task_id, "manifest", 95, 0, 0, "Uploading manifest", 0);
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
@@ -399,29 +414,36 @@ pub async fn run_restore_task(
         };
         drop(payload);
         payload = decrypted;
+    } else {
+        // 跳过解密，不发送 phase
     }
 
-    // 5. 流式 zstd 解压 + 增量 SHA256 校验
-    emit_progress(&app, &task_id, "decompress", 80, 0, 0, "Decompressing payload", 0);
-    let mut decoder = zstd::Decoder::new(std::io::Cursor::new(&payload))?;
-    let mut restored = Vec::with_capacity(manifest.original_size as usize);
-    let mut hasher = Sha256::new();
-    let mut buf = [0u8; 64 * 1024];
-    loop {
-        let n = decoder.read(&mut buf)?;
-        if n == 0 { break; }
-        hasher.update(&buf[..n]);
-        restored.extend_from_slice(&buf[..n]);
+    // 5. 流式 zstd 解压 + 增量 SHA256 校验（若未压缩则直接校验）
+    let restored;
+    if manifest.compressed {
+        emit_progress(&app, &task_id, "decompress", 80, 0, 0, "Decompressing payload", 0);
+        let mut decoder = zstd::Decoder::new(std::io::Cursor::new(&payload))?;
+        let mut buf_out = Vec::with_capacity(manifest.original_size as usize);
+        let mut buf = [0u8; 64 * 1024];
+        loop {
+            let n = decoder.read(&mut buf)?;
+            if n == 0 { break; }
+            buf_out.extend_from_slice(&buf[..n]);
+        }
+        drop(payload);
+        restored = buf_out;
+        let restored_sha = hex::encode(sha2::Sha256::digest(&restored));
+        info!("[restore:{}] decompressed to {} bytes", task_id, restored.len());
+        emit_progress(&app, &task_id, "verify_decompress", 88, 0, 0, "Verifying decompressed checksum", 0);
+        if restored_sha != manifest.original_sha256 {
+            emit_progress(&app, &task_id, "verify_decompress_fail", 88, 0, 0, "Decompressed checksum mismatch", 0);
+            return Err(anyhow!("Restored file checksum mismatch"));
+        }
+        emit_progress(&app, &task_id, "verify_decompress_ok", 90, 0, 0, "Decompressed checksum verified", 0);
+    } else {
+        // 跳过解压，不发送 phase
+        restored = payload;
     }
-    drop(payload);
-    let restored_sha = hex::encode(hasher.finalize());
-    info!("[restore:{}] decompressed to {} bytes", task_id, restored.len());
-    emit_progress(&app, &task_id, "verify_decompress", 88, 0, 0, "Verifying decompressed checksum", 0);
-    if restored_sha != manifest.original_sha256 {
-        emit_progress(&app, &task_id, "verify_decompress_fail", 88, 0, 0, "Decompressed checksum mismatch", 0);
-        return Err(anyhow!("Restored file checksum mismatch"));
-    }
-    emit_progress(&app, &task_id, "verify_decompress_ok", 90, 0, 0, "Decompressed checksum verified", 0);
 
     // 6. 写入目标文件，按冲突策略处理同名文件
     let rel = sanitize_relative_path(&manifest.source_relative_path)?;

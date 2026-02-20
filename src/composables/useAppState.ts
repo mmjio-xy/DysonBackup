@@ -39,6 +39,10 @@ export function useAppState() {
   // Tray
   const closeAction = ref("ask");
 
+  // Compress
+  const compressEnabled = ref(true);
+  const compressLevel = ref(6);
+
   function addLog(line: string) {
     const t = new Date().toTimeString().slice(0, 8);
     logs.value = [`${t} ${line}`, ...logs.value].slice(0, 200);
@@ -84,6 +88,8 @@ export function useAppState() {
         sourceRelativePath: file.relativePath,
         useEncryption: encryptByDefault.value,
         encryptionPassword: encryptByDefault.value ? encryptionPassword.value : null,
+        useCompression: compressEnabled.value,
+        compressionLevel: compressLevel.value,
       },
     });
     taskStatus.value[taskId] = { taskId, phase: "read", percent: 0, bytesDone: 0, bytesTotal: 0, message: "", speedBps: 0 };
@@ -119,6 +125,12 @@ export function useAppState() {
   async function setCloseAction(action: string) {
     await invoke("set_close_action", { action });
     closeAction.value = action;
+  }
+
+  async function setCompressConfig(enabled: boolean, level: number) {
+    await invoke("set_compress_config", { enabled, level });
+    compressEnabled.value = enabled;
+    compressLevel.value = level;
   }
 
   async function saveEncryptionSettings() {
@@ -179,6 +191,8 @@ export function useAppState() {
       encryptByDefault?: boolean;
       encryptionPasswordSet?: boolean;
       closeAction?: string;
+      compressEnabled?: boolean;
+      compressLevel?: number;
     }>("get_config");
     if (cfg.saveRoot) saveRoot.value = cfg.saveRoot;
     if (cfg.webdav) {
@@ -190,6 +204,8 @@ export function useAppState() {
     debugMode.value = cfg.debugMode ?? false;
     encryptByDefault.value = cfg.encryptByDefault ?? false;
     closeAction.value = cfg.closeAction ?? "ask";
+    compressEnabled.value = cfg.compressEnabled ?? true;
+    compressLevel.value = cfg.compressLevel ?? 6;
     if (cfg.encryptionPasswordSet) {
       try {
         encryptionPassword.value = await invoke<string>("get_encryption_password");
@@ -232,6 +248,7 @@ export function useAppState() {
     totalLocalSize, totalCloudSize, encryptedCount, chunkedCount, latestBackup, runningTasks,
     debugMode, setDebugMode, saveEncryptionSettings,
     closeAction, setCloseAction,
+    compressEnabled, compressLevel, setCompressConfig,
     detectPaths, savePath, scanSaves, saveWebDavConfig, testWebDav, startBackup, loadBackups,
     restore, cancelTask, deleteBackup, selectRestoreDir, resolveConflict,
   };
