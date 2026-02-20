@@ -9,6 +9,8 @@ const props = defineProps<{
   logs: string[];
   taskStatus: Record<string, TaskProgress & { done?: boolean; failed?: boolean; cancelled?: boolean; error?: string }>;
   lastTaskId: string;
+  encryptEnabled: boolean;
+  compressEnabled: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -29,20 +31,25 @@ const PHASE_ORDER = BACKUP_PHASES.map(p => p.key);
 
 const task = computed(() => props.lastTaskId ? props.taskStatus[props.lastTaskId] ?? null : null);
 
-type PhaseState = "done" | "active" | "stopped" | "pending";
+type PhaseState = "done" | "active" | "stopped" | "pending" | "skipped";
+
+const SKIPPABLE: Record<string, () => boolean> = {
+  compress: () => !props.compressEnabled,
+  encrypt: () => !props.encryptEnabled,
+};
+
 function phaseState(key: string): PhaseState {
   if (!task.value) return "pending";
   const cur = task.value.phase;
-  if (cur === "done") return "done";
+  if (cur === "done") return SKIPPABLE[key]?.() ? "skipped" : "done";
   const curIdx = PHASE_ORDER.indexOf(cur);
   const keyIdx = PHASE_ORDER.indexOf(key);
-  // cancelled/failed：之前的 done，当前的 stopped，之后的 pending
   if (cur === "cancelled" || cur === "failed") {
-    if (keyIdx < curIdx) return "done";
+    if (keyIdx < curIdx) return SKIPPABLE[key]?.() ? "skipped" : "done";
     if (keyIdx === curIdx) return "stopped";
     return "pending";
   }
-  if (keyIdx < curIdx) return "done";
+  if (keyIdx < curIdx) return SKIPPABLE[key]?.() ? "skipped" : "done";
   if (keyIdx === curIdx) return "active";
   return "pending";
 }
@@ -104,7 +111,7 @@ const isTerminal = computed(() =>
       <!-- 任务状态卡片 -->
       <n-card>
         <template #header>
-          <span><i class="fas fa-tasks" style="margin-right:6px"></i>任务状态</span>
+          <span><i class="fas fa-tasks" style="margin-right:6px"></i>备份进度</span>
           <n-tag v-if="task" :type="task.phase === 'done' ? 'success' : task.phase === 'cancelled' ? 'warning' : task.phase === 'failed' ? 'error' : 'info'"
             round size="small" style="margin-left:10px">
             {{ task.phase === 'done' ? '完成' : task.phase === 'cancelled' ? '已终止' : task.phase === 'failed' ? '失败' : '进行中' }}
@@ -131,12 +138,16 @@ const isTerminal = computed(() =>
               class="phase-step" :class="phaseState(p.key)">
               <div class="phase-icon">
                 <i v-if="phaseState(p.key) === 'done'" class="fas fa-check-circle" style="color:#48b58b"></i>
+                <i v-else-if="phaseState(p.key) === 'skipped'" class="fas fa-exclamation-circle" style="color:#f0a020"></i>
                 <i v-else-if="phaseState(p.key) === 'active'" class="spinner-icon fas fa-spinner" style="color:#6ea8fe"></i>
                 <i v-else-if="phaseState(p.key) === 'stopped'" class="fas fa-times-circle" style="color:#e57373"></i>
                 <i v-else :class="p.icon" style="color:#4a566b"></i>
               </div>
               <div class="phase-info">
-                <span class="phase-label">{{ p.label }}</span>
+                <span class="phase-label">
+                  {{ p.label }}
+                  <n-tag v-if="phaseState(p.key) === 'skipped'" size="tiny" round type="warning" class="verify-tag">已跳过</n-tag>
+                </span>
                 <span v-if="p.key === 'upload' && phaseState('upload') === 'active' && uploadDetail"
                   class="phase-detail">{{ uploadDetail }}</span>
               </div>
@@ -194,12 +205,14 @@ const isTerminal = computed(() =>
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 .phase-step.done { opacity: 0.75; }
+.phase-step.skipped { opacity: 0.65; background: rgba(240,160,32,0.06); }
 .phase-step.active { opacity: 1; background: var(--bg-active, rgba(110,168,254,0.08)); }
 .phase-step.stopped { opacity: 1; background: rgba(229,115,115,0.08); }
 .phase-icon { width: 18px; text-align: center; font-size: 14px; flex-shrink: 0; }
 .phase-info { flex: 1; display: flex; flex-direction: column; gap: 2px; }
 .phase-label { font-size: 13px; color: var(--text); }
 .phase-detail { font-size: 11px; color: var(--text-muted); }
+.verify-tag { margin-left: 4px; }
 
 /* 上传子进度条 */
 .phase-subbar {
