@@ -40,3 +40,8 @@ export type ConflictFound = {
   taskId: string;
   filePath: string;
 };
+
+export type FileChanged = {
+  path: string;
+  kind: string;
+};

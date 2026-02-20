@@ -1,8 +1,10 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { NConfigProvider, NButton, NScrollbar } from "naive-ui";
+import { NConfigProvider, NButton, NScrollbar, NModal, NCheckbox } from "naive-ui";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
+import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { useTheme } from "./composables/useTheme";
 import { useAppState } from "./composables/useAppState";
 import OverviewView from "./views/OverviewView.vue";
@@ -19,6 +21,7 @@ const {
   restoreTargetDir, encryptionPassword, decryptionPassword, useEncryptPwForRestore, conflictState,
   baseUrl, username, webdavPassword, webdavPasswordSet, remoteRoot, encryptByDefault,
   debugMode, setDebugMode, saveEncryptionSettings,
+  closeAction, setCloseAction,
   scanSaves, startBackup, loadBackups, restore, cancelTask, deleteBackup,
   saveWebDavConfig, detectPaths, savePath, selectRestoreDir, resolveConflict,
 } = useAppState();
@@ -32,7 +35,19 @@ const tabs: { key: TabKey; label: string; icon: string }[] = [
 
 const appWindow = getCurrentWindow();
 const appVersion = ref("");
-onMounted(async () => { appVersion.value = await getVersion(); });
+const showCloseDialog = ref(false);
+const rememberClose = ref(false);
+
+onMounted(async () => {
+  appVersion.value = await getVersion();
+  await listen("close_requested", () => { showCloseDialog.value = true; });
+});
+
+async function handleClose(action: "minimize" | "quit") {
+  showCloseDialog.value = false;
+  await invoke("confirm_close", { action, remember: rememberClose.value });
+  rememberClose.value = false;
+}
 </script>
 
 <template>
@@ -98,14 +113,29 @@ onMounted(async () => { appVersion.value = await getVersion(); });
           @update:use-encrypt-pw-for-restore="useEncryptPwForRestore = $event"
           @update:decryption-password="decryptionPassword = $event"
           :debug-mode="debugMode"
+          :close-action="closeAction"
           @save-webdav="saveWebDavConfig"
           @save-encryption="saveEncryptionSettings"
           @detect-paths="detectPaths" @save-path="savePath"
-          @update:debug-mode="setDebugMode" />
+          @update:debug-mode="setDebugMode"
+          @update:close-action="setCloseAction" />
           </div>
         </n-scrollbar>
       </div>
     </div>
+
+    <!-- 关闭确认弹窗 -->
+    <n-modal v-model:show="showCloseDialog" preset="card" title="关闭程序" style="width:360px" :mask-closable="false">
+      <p style="margin:0 0 12px">选择关闭方式：</p>
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:16px">
+        <n-checkbox v-model:checked="rememberClose">记住我的选择</n-checkbox>
+      </div>
+      <div style="display:flex;gap:10px;justify-content:flex-end">
+        <n-button @click="handleClose('minimize')">最小化到托盘</n-button>
+        <n-button type="error" @click="handleClose('quit')"><i class="fas fa-power-off" style="margin-right:4px"></i>退出程序</n-button>
+        <n-button @click="showCloseDialog = false">取消</n-button>
+      </div>
+    </n-modal>
   </n-config-provider>
 </template>
 

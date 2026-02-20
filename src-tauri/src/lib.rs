@@ -22,8 +22,8 @@ use tasks::{
     register_task, run_backup_task, run_restore_task, save_name_from_relative, unregister_task,
 };
 use types::{
-    AppState, BackupRequest, ConfigResp, DetectPathsResp, LocalSaveFile, RemoteBackupVersion,
-    RestoreRequest, TaskDone, TestConnDetailResp, WebDavConfigInput,
+    AppState, BackupRequest, ConfigResp, DetectPathsResp, LocalSaveFile,
+    RemoteBackupVersion, RestoreRequest, TaskDone, TestConnDetailResp, WebDavConfigInput,
 };
 use webdav::WebDavClient;
 
@@ -43,6 +43,8 @@ fn get_config(state: State<'_, Arc<AppState>>) -> Result<ConfigResp, String> {
         debug_mode: cfg.debug_mode,
         encrypt_by_default: cfg.encrypt_by_default,
         encryption_password_set: keyring_get("encryption_password").is_ok(),
+        close_action: cfg.close_action.clone(),
+        // auto_watch: cfg.auto_watch,
     })
 }
 
@@ -416,6 +418,144 @@ fn resolve_conflict(task_id: String, action: String, state: State<'_, Arc<AppSta
     tx.send(action).map_err(|_| "Channel closed".to_string())
 }
 
+// ── 托盘 & 文件监听命令 ──────────────────────────────────────
+
+#[tauri::command]
+fn set_close_action(action: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let mut cfg = state.config.lock().map_err(|_| "lock".to_string())?;
+    cfg.close_action = action;
+    persist_config(&cfg).map_err(|e| e.to_string())
+}
+
+/// 前端确认关闭：action = "minimize" | "quit"，remember = 是否记住
+#[tauri::command]
+fn confirm_close(action: String, remember: bool, app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    if remember {
+        let mut cfg = state.config.lock().map_err(|_| "lock".to_string())?;
+        cfg.close_action = action.clone();
+        persist_config(&cfg).map_err(|e| e.to_string())?;
+    }
+    if action == "quit" {
+        app.exit(0);
+    } else if let Some(w) = app.get_webview_window("main") {
+        let _ = w.hide();
+    }
+    Ok(())
+}
+
+// #[tauri::command]
+// fn set_auto_watch(enabled: bool, app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+//     let mut cfg = state.config.lock().map_err(|_| "lock".to_string())?;
+//     cfg.auto_watch = enabled;
+//     persist_config(&cfg).map_err(|e| e.to_string())?;
+//     let save_root = cfg.save_root.clone();
+//     drop(cfg);
+//     if enabled {
+//         if let Some(root) = save_root {
+//             start_watcher(&app, &state, &root)?;
+//         }
+//     } else {
+//         stop_watcher(&state)?;
+//     }
+//     Ok(())
+// }
+//
+// #[tauri::command]
+// fn start_file_watch(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+//     let root = state.config.lock().map_err(|_| "lock".to_string())?
+//         .save_root.clone().ok_or("未设置存档目录")?;
+//     start_watcher(&app, &state, &root)
+// }
+//
+// #[tauri::command]
+// fn stop_file_watch(state: State<'_, Arc<AppState>>) -> Result<(), String> {
+//     stop_watcher(&state)
+// }
+
+// fn start_watcher(app: &AppHandle, state: &State<'_, Arc<AppState>>, root: &str) -> Result<(), String> {
+//     use notify::{Config, EventKind, RecursiveMode, Watcher};
+//
+//     stop_watcher(state)?;
+//     let path = PathBuf::from(root);
+//     if !path.is_dir() { return Err("存档目录不存在".to_string()); }
+//
+//     let app_handle = app.clone();
+//     let mut watcher = notify::RecommendedWatcher::new(
+//         move |res: Result<notify::Event, notify::Error>| {
+//             if let Ok(event) = res {
+//                 let kind_str = match event.kind {
+//                     EventKind::Create(_) => "create",
+//                     EventKind::Modify(_) => "modify",
+//                     EventKind::Remove(_) => "remove",
+//                     _ => return,
+//                 };
+//                 for p in &event.paths {
+//                     let _ = app_handle.emit("file_changed", FileChanged {
+//                         path: p.to_string_lossy().to_string(),
+//                         kind: kind_str.to_string(),
+//                     });
+//                 }
+//             }
+//         },
+//         Config::default(),
+//     ).map_err(|e| e.to_string())?;
+//
+//     watcher.watch(&path, RecursiveMode::Recursive).map_err(|e| e.to_string())?;
+//     *state.file_watcher.lock().map_err(|_| "lock".to_string())? = Some(watcher);
+//     log::info!("[file_watcher] watching {}", root);
+//     Ok(())
+// }
+
+// fn stop_watcher(state: &State<'_, Arc<AppState>>) -> Result<(), String> {
+//     let mut w = state.file_watcher.lock().map_err(|_| "lock".to_string())?;
+//     if w.is_some() {
+//         *w = None;
+//         log::info!("[file_watcher] stopped");
+//     }
+//     Ok(())
+// }
+
+fn setup_tray(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    use tauri::menu::{MenuBuilder, MenuItemBuilder};
+    use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
+
+    let show = MenuItemBuilder::with_id("show", "显示窗口").build(app)?;
+    let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;
+    let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+
+    TrayIconBuilder::with_id("main-tray")
+        .icon(tauri::include_image!("icons/icon.ico"))
+        .tooltip("戴森球计划 · 存档备份")
+        .menu(&menu)
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "show" => {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
+        })
+        .on_tray_icon_event(|tray, event| {
+            if let TrayIconEvent::Click {
+                button: MouseButton::Left,
+                button_state: MouseButtonState::Up,
+                ..
+            } = event
+            {
+                if let Some(w) = tray.app_handle().get_webview_window("main") {
+                    let _ = w.show();
+                    let _ = w.unminimize();
+                    let _ = w.set_focus();
+                }
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
 // ── 应用入口 ──────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -423,15 +563,43 @@ pub fn run() {
     let cfg = load_config();
     logging::init_logging(cfg.debug_mode);
     log::info!("Application starting, debug_mode={}", cfg.debug_mode);
+    // let auto_watch = cfg.auto_watch;
+    // let save_root = cfg.save_root.clone();
     let state = Arc::new(AppState {
         config: Mutex::new(cfg),
         task_flags: Mutex::new(HashMap::new()),
         conflict_channels: Mutex::new(HashMap::new()),
+        // file_watcher: Mutex::new(None),
     });
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .manage(state)
+        .setup(move |app| {
+            setup_tray(app)?;
+            // // 自动启动文件监听（暂时禁用）
+            // if auto_watch {
+            //     if let Some(root) = &save_root {
+            //         let handle = app.handle().clone();
+            //         let st: State<'_, Arc<AppState>> = handle.state();
+            //         let _ = start_watcher(&handle, &st, root);
+            //     }
+            // }
+            Ok(())
+        })
+        .on_window_event(|window, event| {
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                api.prevent_close();
+                let app = window.app_handle();
+                let st: State<'_, Arc<AppState>> = app.state();
+                let action = st.config.lock().map(|c| c.close_action.clone()).unwrap_or_default();
+                match action.as_str() {
+                    "minimize" => { let _ = window.hide(); }
+                    "quit" => { app.exit(0); }
+                    _ => { let _ = app.emit("close_requested", ()); }
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
             get_config,
             detect_save_paths,
@@ -452,6 +620,11 @@ pub fn run() {
             start_restore,
             cancel_task,
             resolve_conflict,
+            set_close_action,
+            confirm_close,
+            // set_auto_watch,
+            // start_file_watch,
+            // stop_file_watch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

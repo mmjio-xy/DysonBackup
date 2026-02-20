@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref, onMounted } from "vue";
-import { NCard, NButton, NInput, NSwitch, NFormItem, NModal, NSpin, NCheckbox, NTabs, NTabPane } from "naive-ui";
+import { NCard, NButton, NInput, NSwitch, NFormItem, NModal, NSpin, NCheckbox, NTabs, NTabPane, NSelect } from "naive-ui";
 import { invoke } from "@tauri-apps/api/core";
 
 const activeTab = ref("webdav");
@@ -37,6 +37,7 @@ defineProps<{
   useEncryptPwForRestore: boolean;
   decryptionPassword: string;
   debugMode: boolean;
+  closeAction: string;
 }>();
 
 const emit = defineEmits<{
@@ -50,6 +51,7 @@ const emit = defineEmits<{
   "update:useEncryptPwForRestore": [v: boolean];
   "update:decryptionPassword": [v: string];
   "update:debugMode": [v: boolean];
+  "update:closeAction": [v: string];
   saveWebdav: [];
   saveEncryption: [];
   detectPaths: [];
@@ -155,6 +157,22 @@ async function runTest() {
           </div>
           <div class="row-btn" style="margin-top:12px">
             <n-button type="primary" @click="emit('saveEncryption')"><i class="fas fa-save" style="margin-right:4px"></i>保存</n-button>
+          </div>
+        </div>
+      </n-tab-pane>
+
+      <!-- 通用 Tab -->
+      <n-tab-pane name="general" tab="通用">
+        <div class="tab-content">
+          <div class="setting-row">
+            <span class="setting-label">关闭窗口时</span>
+            <n-select :value="closeAction" style="width:200px"
+              :options="[
+                { label: '每次询问', value: 'ask' },
+                { label: '最小化到托盘', value: 'minimize' },
+                { label: '直接退出', value: 'quit' },
+              ]"
+              @update:value="emit('update:closeAction', $event)" />
           </div>
         </div>
       </n-tab-pane>
