@@ -5,21 +5,21 @@ use anyhow::Result;
 use env_logger::Builder;
 use log::LevelFilter;
 use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::io::Write;
 use std::sync::{Mutex, Once};
 
 use crate::config::config_file_path;
 
 static INIT: Once = Once::new();
 
-/// 每次 write 后自动 flush 的包装器
-struct AutoFlushWriter(Mutex<BufWriter<File>>);
+/// 每次 write 后自动 flush，确保日志实时写入磁盘
+struct AutoFlushWriter(Mutex<File>);
 
 impl Write for &AutoFlushWriter {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
-        let mut w = self.0.lock().unwrap();
-        let n = w.write(buf)?;
-        w.flush()?;
+        let mut f = self.0.lock().unwrap();
+        let n = f.write(buf)?;
+        f.flush()?;
         Ok(n)
     }
     fn flush(&mut self) -> std::io::Result<()> {
@@ -54,7 +54,7 @@ fn setup_logger(debug_mode: bool) -> Result<()> {
     let dir = log_dir()?;
     let filename = chrono::Local::now().format("%Y%m%d_%H%M%S.log").to_string();
     let file = File::create(dir.join(&filename))?;
-    let writer = Box::leak(Box::new(AutoFlushWriter(Mutex::new(BufWriter::new(file)))));
+    let writer = Box::leak(Box::new(AutoFlushWriter(Mutex::new(file))));
     let level = if debug_mode { LevelFilter::Debug } else { LevelFilter::Error };
 
     Builder::new()
