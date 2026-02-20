@@ -44,6 +44,8 @@ fn get_config(state: State<'_, Arc<AppState>>) -> Result<ConfigResp, String> {
         encrypt_by_default: cfg.encrypt_by_default,
         encryption_password_set: keyring_get("encryption_password").is_ok(),
         close_action: cfg.close_action.clone(),
+        compress_enabled: cfg.compress_enabled,
+        compress_level: cfg.compress_level,
         // auto_watch: cfg.auto_watch,
     })
 }
@@ -345,6 +347,7 @@ async fn list_remote_backups(
                     compressed_size: m.compressed_size,
                     encrypted: m.encrypted,
                     chunked: m.chunked,
+                    compressed: m.compressed,
                     source_relative_path: m.source_relative_path,
                 });
             }
@@ -424,6 +427,14 @@ fn resolve_conflict(task_id: String, action: String, state: State<'_, Arc<AppSta
 fn set_close_action(action: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
     let mut cfg = state.config.lock().map_err(|_| "lock".to_string())?;
     cfg.close_action = action;
+    persist_config(&cfg).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn set_compress_config(enabled: bool, level: i32, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let mut cfg = state.config.lock().map_err(|_| "lock".to_string())?;
+    cfg.compress_enabled = enabled;
+    cfg.compress_level = level.clamp(1, 22);
     persist_config(&cfg).map_err(|e| e.to_string())
 }
 
@@ -621,6 +632,7 @@ pub fn run() {
             cancel_task,
             resolve_conflict,
             set_close_action,
+            set_compress_config,
             confirm_close,
             // set_auto_watch,
             // start_file_watch,

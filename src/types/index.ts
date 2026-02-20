@@ -17,6 +17,7 @@ export type RemoteBackup = {
   compressedSize: number;
   encrypted: boolean;
   chunked: boolean;
+  compressed: boolean;
   sourceRelativePath: string;
 };
 
