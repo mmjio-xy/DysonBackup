@@ -171,7 +171,7 @@ pub async fn run_backup_task(
     let zstd_level = if req.use_compression { req.compression_level } else { 0 };
 
     // 读取文件 + SHA256
-    emit_progress(&app, &task_id, "read", 5, 0, 0, "Reading file", 0);
+    emit_progress(&app, &task_id, "read", 5, 0, 0, "读取文件", 0);
     let mut raw_data = Vec::new();
     {
         let mut buf = [0u8; 64 * 1024];
@@ -184,17 +184,17 @@ pub async fn run_backup_task(
             raw_data.extend_from_slice(&buf[..n]);
             bytes_read += n as u64;
             let pct = 5 + ((bytes_read as f64 / original_size.max(1) as f64) * 15.0) as u8;
-            emit_progress(&app, &task_id, "read", pct.min(20), bytes_read, original_size, "Reading file", 0);
+            emit_progress(&app, &task_id, "read", pct.min(20), bytes_read, original_size, "读取文件", 0);
         }
     }
 
     // 压缩（可选）
     if req.use_compression {
-        emit_progress(&app, &task_id, "compress", 22, 0, 0, "Compressing", 0);
+        emit_progress(&app, &task_id, "compress", 22, 0, 0, "压缩中", 0);
         let mut encoder = zstd::Encoder::new(&mut payload_data, req.compression_level)?;
         encoder.write_all(&raw_data)?;
         encoder.finish()?;
-        emit_progress(&app, &task_id, "compress", 30, 0, 0, "Compressed", 0);
+        emit_progress(&app, &task_id, "compress", 30, 0, 0, "压缩完成", 0);
     } else {
         payload_data = raw_data;
     }
@@ -209,7 +209,7 @@ pub async fn run_backup_task(
     if req.use_encryption {
         let password = req.encryption_password.as_deref()
             .ok_or_else(|| anyhow!("Encryption password is required"))?;
-        emit_progress(&app, &task_id, "encrypt", 35, 0, payload.len() as u64, "Encrypting payload", 0);
+        emit_progress(&app, &task_id, "encrypt", 35, 0, payload.len() as u64, "加密中", 0);
         let (cipher, meta) = encrypt_aes_gcm_stream(password, &payload)?;
         payload = cipher;
         encryption_meta = Some(meta);
@@ -255,7 +255,7 @@ pub async fn run_backup_task(
                     let pct = 40 + ((global_done as f64 / total as f64) * 50.0) as u8;
                     let elapsed = t0.elapsed().as_secs_f64().max(0.001);
                     let speed = (global_done as f64 / elapsed) as u64;
-                    emit_progress(&app2, &tid2, "upload", pct.min(92), global_done, total, "Uploading", speed);
+                    emit_progress(&app2, &tid2, "upload", pct.min(92), global_done, total, "上传中", speed);
                 },
             ).await?;
             uploaded_so_far += chunk_len;
@@ -279,7 +279,7 @@ pub async fn run_backup_task(
                 let pct = 40 + ((done as f64 / total.max(1) as f64) * 50.0) as u8;
                 let elapsed = upload_start.elapsed().as_secs_f64().max(0.001);
                 let speed = (done as f64 / elapsed) as u64;
-                emit_progress(&app2, &tid2, "upload", pct.min(92), done, total, "Uploading", speed);
+                emit_progress(&app2, &tid2, "upload", pct.min(92), done, total, "上传中", speed);
             },
         ).await?;
     }
@@ -303,7 +303,7 @@ pub async fn run_backup_task(
         zstd_level,
         compressed: req.use_compression,
     };
-    emit_progress(&app, &task_id, "manifest", 95, 0, 0, "Uploading manifest", 0);
+    emit_progress(&app, &task_id, "manifest", 95, 0, 0, "上传清单", 0);
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
     info!("[backup:{}] uploading manifest ({} bytes): {}", task_id, manifest_json.len(), String::from_utf8_lossy(&manifest_json));
     client.put_bytes(
@@ -312,7 +312,7 @@ pub async fn run_backup_task(
     ).await?;
 
     info!("[backup:{}] completed successfully", task_id);
-    emit_progress(&app, &task_id, "done", 100, 0, 0, "Backup completed", 0);
+    emit_progress(&app, &task_id, "done", 100, 0, 0, "备份完成", 0);
     Ok(())
 }
 
@@ -347,7 +347,7 @@ pub async fn run_restore_task(
     let client = WebDavClient::new(&webdav_cfg.base_url, &webdav_cfg.username, &webdav_password)?;
 
     // 1. 下载并解析 manifest
-    emit_progress(&app, &task_id, "manifest", 10, 0, 0, "Downloading manifest", 0);
+    emit_progress(&app, &task_id, "manifest", 10, 0, 0, "下载清单", 0);
     let manifest = fetch_manifest(&client, &webdav_cfg.remote_root, &req.save_name, &req.backup_id).await?;
     info!("[restore:{}] manifest: original_size={} compressed={} encrypted={} chunked={} chunks={}",
         task_id, manifest.original_size, manifest.compressed_size, manifest.encrypted, manifest.chunked, manifest.chunks.len());
@@ -373,7 +373,7 @@ pub async fn run_restore_task(
             let percent = 15 + (((i + 1) as f64 / total_chunks as f64) * 45.0) as u8;
             let elapsed = dl_start.elapsed().as_secs_f64().max(0.001);
             let speed = (dl_bytes as f64 / elapsed) as u64;
-            emit_progress(&app, &task_id, "download", percent.min(60), dl_bytes, manifest.compressed_size, "Downloading chunks", speed);
+            emit_progress(&app, &task_id, "download", percent.min(60), dl_bytes, manifest.compressed_size, "下载分片", speed);
         }
     } else {
         let app2 = app.clone();
@@ -387,18 +387,18 @@ pub async fn run_restore_task(
                 } else { 30 };
                 let elapsed = dl_start.elapsed().as_secs_f64().max(0.001);
                 let speed = (done as f64 / elapsed) as u64;
-                emit_progress(&app2, &tid2, "download", percent.min(60), done, total, "Downloading payload", speed);
+                emit_progress(&app2, &tid2, "download", percent.min(60), done, total, "下载数据", speed);
             },
         ).await?;
     }
 
     // 3. 校验整体 payload SHA256
-    emit_progress(&app, &task_id, "verify_download", 62, 0, 0, "Verifying download checksum", 0);
+    emit_progress(&app, &task_id, "verify_download", 62, 0, 0, "校验下载数据", 0);
     if sha256_hex(&payload) != manifest.payload_sha256 {
-        emit_progress(&app, &task_id, "verify_download_fail", 62, 0, 0, "Download checksum mismatch", 0);
+        emit_progress(&app, &task_id, "verify_download_fail", 62, 0, 0, "下载校验失败", 0);
         return Err(anyhow!("Payload checksum mismatch"));
     }
-    emit_progress(&app, &task_id, "verify_download_ok", 63, 0, 0, "Download checksum verified", 0);
+    emit_progress(&app, &task_id, "verify_download_ok", 63, 0, 0, "下载校验通过", 0);
 
     // 4. 解密（若加密）— 兼容旧整体加密和新分段加密
     if manifest.encrypted {
@@ -406,7 +406,7 @@ pub async fn run_restore_task(
             .ok_or_else(|| anyhow!("Encryption password is required"))?;
         let meta = manifest.encryption_meta.as_ref()
             .ok_or_else(|| anyhow!("Missing encryption metadata"))?;
-        emit_progress(&app, &task_id, "decrypt", 70, 0, 0, "Decrypting payload", 0);
+        emit_progress(&app, &task_id, "decrypt", 70, 0, 0, "解密中", 0);
         let decrypted = if meta.stream_encryption.unwrap_or(false) {
             decrypt_aes_gcm_stream(password, &payload, meta)?
         } else {
@@ -421,7 +421,7 @@ pub async fn run_restore_task(
     // 5. 流式 zstd 解压 + 增量 SHA256 校验（若未压缩则直接校验）
     let restored;
     if manifest.compressed {
-        emit_progress(&app, &task_id, "decompress", 80, 0, 0, "Decompressing payload", 0);
+        emit_progress(&app, &task_id, "decompress", 80, 0, 0, "解压中", 0);
         let mut decoder = zstd::Decoder::new(std::io::Cursor::new(&payload))?;
         let mut buf_out = Vec::with_capacity(manifest.original_size as usize);
         let mut buf = [0u8; 64 * 1024];
@@ -434,12 +434,12 @@ pub async fn run_restore_task(
         restored = buf_out;
         let restored_sha = hex::encode(sha2::Sha256::digest(&restored));
         info!("[restore:{}] decompressed to {} bytes", task_id, restored.len());
-        emit_progress(&app, &task_id, "verify_decompress", 88, 0, 0, "Verifying decompressed checksum", 0);
+        emit_progress(&app, &task_id, "verify_decompress", 88, 0, 0, "校验解压数据", 0);
         if restored_sha != manifest.original_sha256 {
-            emit_progress(&app, &task_id, "verify_decompress_fail", 88, 0, 0, "Decompressed checksum mismatch", 0);
+            emit_progress(&app, &task_id, "verify_decompress_fail", 88, 0, 0, "解压校验失败", 0);
             return Err(anyhow!("Restored file checksum mismatch"));
         }
-        emit_progress(&app, &task_id, "verify_decompress_ok", 90, 0, 0, "Decompressed checksum verified", 0);
+        emit_progress(&app, &task_id, "verify_decompress_ok", 90, 0, 0, "解压校验通过", 0);
     } else {
         // 跳过解压，不发送 phase
         restored = payload;
@@ -480,6 +480,6 @@ pub async fn run_restore_task(
     }
     fs::write(&final_path, &restored)?;
     info!("[restore:{}] wrote {} bytes to {}", task_id, restored.len(), final_path.display());
-    emit_progress(&app, &task_id, "done", 100, 0, 0, &format!("Restored to {}", final_path.display()), 0);
+    emit_progress(&app, &task_id, "done", 100, 0, 0, &format!("已恢复到 {}", final_path.display()), 0);
     Ok(())
 }
