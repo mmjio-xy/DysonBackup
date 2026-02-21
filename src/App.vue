@@ -17,14 +17,17 @@ const activeTab = ref<TabKey>("overview");
 const { naiveTheme, isDark, toggle } = useTheme();
 const {
   saveRoot, latestBackup, totalLocalSize, totalCloudSize, backups,
-  encryptedCount, chunkedCount, logs, files, taskStatus, lastTaskId,
+  encryptedCount, chunkedCount, logs, taskStatus, lastTaskId,
   restoreTargetDir, encryptionPassword, decryptionPassword, useEncryptPwForRestore, conflictState,
   baseUrl, username, webdavPassword, webdavPasswordSet, remoteRoot, encryptByDefault,
   debugMode, setDebugMode, saveEncryptionSettings,
   closeAction, setCloseAction,
   compressEnabled, compressLevel, setCompressConfig,
+  saveProfiles, activeProfileName, searchQuery, filteredFiles,
+  restoreProfileFilter, restoreSearchQuery, filteredBackups,
+  addProfile, updateProfile, deleteProfile,
   scanSaves, startBackup, loadBackups, restore, cancelTask, deleteBackup,
-  saveWebDavConfig, savePath, selectRestoreDir, resolveConflict,
+  saveWebDavConfig, selectRestoreDir, resolveConflict,
 } = useAppState();
 
 const tabs: { key: TabKey; label: string; icon: string }[] = [
@@ -88,15 +91,24 @@ async function handleClose(action: "minimize" | "quit") {
           :total-cloud-size="totalCloudSize" :backup-count="backups.length"
           :encrypted-count="encryptedCount" :chunked-count="chunkedCount" :logs="logs" />
         <BackupView v-else-if="activeTab === 'backup'"
-          :files="files" :logs="logs" :task-status="taskStatus" :last-task-id="lastTaskId"
+          :files="filteredFiles" :logs="logs" :task-status="taskStatus" :last-task-id="lastTaskId"
           :encrypt-enabled="encryptByDefault" :compress-enabled="compressEnabled"
-          @scan="scanSaves" @backup="startBackup" @cancel="cancelTask" />
+          :save-profiles="saveProfiles" :active-profile-name="activeProfileName"
+          :search-query="searchQuery"
+          @scan="scanSaves" @backup="startBackup" @cancel="cancelTask"
+          @update:active-profile-name="activeProfileName = $event; scanSaves()"
+          @update:search-query="searchQuery = $event" />
         <RestoreView v-else-if="activeTab === 'restore'"
-          :backups="backups" :restore-target-dir="restoreTargetDir"
+          :backups="filteredBackups" :restore-target-dir="restoreTargetDir"
           :save-root="saveRoot"
           :encryption-password="encryptionPassword"
           :task-status="taskStatus" :last-task-id="lastTaskId"
           :conflict-state="conflictState"
+          :save-profiles="saveProfiles"
+          :restore-profile-filter="restoreProfileFilter"
+          :restore-search-query="restoreSearchQuery"
+          @update:restore-profile-filter="restoreProfileFilter = $event"
+          @update:restore-search-query="restoreSearchQuery = $event"
           @refresh="loadBackups" @restore="restore"
           :on-delete="deleteBackup" @reload="loadBackups"
           :on-select-dir="selectRestoreDir"
@@ -105,12 +117,13 @@ async function handleClose(action: "minimize" | "quit") {
         <SettingsView v-else-if="activeTab === 'settings'"
           :base-url="baseUrl" :username="username" :webdav-password="webdavPassword"
           :webdav-password-set="webdavPasswordSet"
-          :remote-root="remoteRoot" :save-root="saveRoot"
+          :remote-root="remoteRoot"
+          :save-profiles="saveProfiles"
           :encrypt-by-default="encryptByDefault" :encryption-password="encryptionPassword"
           :use-encrypt-pw-for-restore="useEncryptPwForRestore" :decryption-password="decryptionPassword"
           @update:base-url="baseUrl = $event" @update:username="username = $event"
           @update:webdav-password="webdavPassword = $event" @update:remote-root="remoteRoot = $event"
-          @update:save-root="saveRoot = $event" @update:encrypt-by-default="encryptByDefault = $event"
+          @update:encrypt-by-default="encryptByDefault = $event"
           @update:encryption-password="encryptionPassword = $event"
           @update:use-encrypt-pw-for-restore="useEncryptPwForRestore = $event"
           @update:decryption-password="decryptionPassword = $event"
@@ -120,7 +133,9 @@ async function handleClose(action: "minimize" | "quit") {
           :compress-level="compressLevel"
           @save-webdav="saveWebDavConfig"
           @save-encryption="saveEncryptionSettings"
-          @save-path="savePath"
+          @add-profile="addProfile"
+          @update-profile="updateProfile"
+          @delete-profile="deleteProfile"
           @update:debug-mode="setDebugMode"
           @update:close-action="setCloseAction"
           @update:compress-config="setCompressConfig" />

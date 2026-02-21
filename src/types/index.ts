@@ -1,5 +1,12 @@
 export type TabKey = "overview" | "backup" | "restore" | "settings";
 
+export type SaveProfile = {
+  name: string;
+  saveRoot: string;
+  saveMode: string;
+  saveExtension: string;
+};
+
 export type LocalSaveFile = {
   localFilePath: string;
   relativePath: string;
@@ -19,6 +26,8 @@ export type RemoteBackup = {
   chunked: boolean;
   compressed: boolean;
   sourceRelativePath: string;
+  profileName: string;
+  isTar: boolean;
 };
 
 export type TaskProgress = {

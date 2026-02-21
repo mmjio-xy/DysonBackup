@@ -162,18 +162,30 @@ pub async fn run_backup_task(
     // 1+2. 流式读文件 → 增量 SHA256 → 可选 zstd 流式压缩
     should_cancel(&flag)?;
 
-    let file = File::open(&req.local_file_path)
-        .with_context(|| format!("Failed to open file: {}", req.local_file_path))?;
-    let original_size = file.metadata()?.len();
-    let mut reader = BufReader::with_capacity(64 * 1024, file);
+    let zstd_level = if req.use_compression { req.compression_level } else { 0 };
     let mut hasher = Sha256::new();
     let mut payload_data = Vec::new();
-    let zstd_level = if req.use_compression { req.compression_level } else { 0 };
 
-    // 读取文件 + SHA256
+    // 读取文件/目录 + SHA256
     emit_progress(&app, &task_id, "read", 5, 0, 0, "读取文件", 0);
-    let mut raw_data = Vec::new();
-    {
+    let raw_data = if req.is_folder {
+        // tar 打包整个目录
+        let mut tar_buf = Vec::new();
+        {
+            let mut ar = tar::Builder::new(&mut tar_buf);
+            ar.append_dir_all(".", &req.local_file_path)
+                .with_context(|| format!("Failed to tar directory: {}", req.local_file_path))?;
+            ar.finish()?;
+        }
+        hasher.update(&tar_buf);
+        emit_progress(&app, &task_id, "read", 20, tar_buf.len() as u64, tar_buf.len() as u64, "读取文件", 0);
+        tar_buf
+    } else {
+        let file = File::open(&req.local_file_path)
+            .with_context(|| format!("Failed to open file: {}", req.local_file_path))?;
+        let original_size = file.metadata()?.len();
+        let mut reader = BufReader::with_capacity(64 * 1024, file);
+        let mut data = Vec::new();
         let mut buf = [0u8; 64 * 1024];
         let mut bytes_read = 0u64;
         loop {
@@ -181,12 +193,14 @@ pub async fn run_backup_task(
             let n = reader.read(&mut buf)?;
             if n == 0 { break; }
             hasher.update(&buf[..n]);
-            raw_data.extend_from_slice(&buf[..n]);
+            data.extend_from_slice(&buf[..n]);
             bytes_read += n as u64;
             let pct = 5 + ((bytes_read as f64 / original_size.max(1) as f64) * 15.0) as u8;
             emit_progress(&app, &task_id, "read", pct.min(20), bytes_read, original_size, "读取文件", 0);
         }
-    }
+        data
+    };
+    let original_size = raw_data.len() as u64;
 
     // 压缩（可选）
     if req.use_compression {
@@ -302,6 +316,8 @@ pub async fn run_backup_task(
         original_sha256: original_sha,
         zstd_level,
         compressed: req.use_compression,
+        profile_name: req.profile_name,
+        is_tar: req.is_folder,
     };
     emit_progress(&app, &task_id, "manifest", 95, 0, 0, "上传清单", 0);
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
@@ -445,41 +461,51 @@ pub async fn run_restore_task(
         restored = payload;
     }
 
-    // 6. 写入目标文件，按冲突策略处理同名文件
-    let rel = sanitize_relative_path(&manifest.source_relative_path)?;
+    // 6. 写入目标文件/目录
     let target_root = PathBuf::from(&req.target_dir);
     fs::create_dir_all(&target_root)?;
-    let desired_path = target_root.join(&rel);
-    let final_path = if desired_path.exists() {
-        match req.conflict_policy {
-            ConflictPolicy::Overwrite => desired_path,
-            ConflictPolicy::Rename => rename_path(&desired_path, &target_root),
-            ConflictPolicy::Ask => {
-                // 创建 oneshot channel，emit 事件等待前端响应
-                let (tx, rx) = tokio::sync::oneshot::channel::<String>();
-                if let Ok(mut map) = state.conflict_channels.lock() {
-                    map.insert(task_id.clone(), tx);
-                }
-                let _ = app.emit("conflict_found", ConflictFound {
-                    task_id: task_id.clone(),
-                    file_path: desired_path.to_string_lossy().to_string(),
-                });
-                let action = rx.await.map_err(|_| anyhow!("Conflict channel closed"))?;
-                match action.as_str() {
-                    "overwrite" => desired_path,
-                    "rename" => rename_path(&desired_path, &target_root),
-                    _ => return Err(anyhow!("Restore cancelled by user")),
+
+    if manifest.is_tar {
+        // tar 解包到 target_dir/save_name/
+        let unpack_dir = target_root.join(&manifest.source_relative_path);
+        fs::create_dir_all(&unpack_dir)?;
+        let mut archive = tar::Archive::new(std::io::Cursor::new(&restored));
+        archive.unpack(&unpack_dir)?;
+        info!("[restore:{}] unpacked tar to {}", task_id, unpack_dir.display());
+        emit_progress(&app, &task_id, "done", 100, 0, 0, &format!("已恢复到 {}", unpack_dir.display()), 0);
+    } else {
+        let rel = sanitize_relative_path(&manifest.source_relative_path)?;
+        let desired_path = target_root.join(&rel);
+        let final_path = if desired_path.exists() {
+            match req.conflict_policy {
+                ConflictPolicy::Overwrite => desired_path,
+                ConflictPolicy::Rename => rename_path(&desired_path, &target_root),
+                ConflictPolicy::Ask => {
+                    let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+                    if let Ok(mut map) = state.conflict_channels.lock() {
+                        map.insert(task_id.clone(), tx);
+                    }
+                    let _ = app.emit("conflict_found", ConflictFound {
+                        task_id: task_id.clone(),
+                        file_path: desired_path.to_string_lossy().to_string(),
+                    });
+                    let action = rx.await.map_err(|_| anyhow!("Conflict channel closed"))?;
+                    match action.as_str() {
+                        "overwrite" => desired_path,
+                        "rename" => rename_path(&desired_path, &target_root),
+                        _ => return Err(anyhow!("Restore cancelled by user")),
+                    }
                 }
             }
+        } else {
+            desired_path
+        };
+        if let Some(parent) = final_path.parent() {
+            fs::create_dir_all(parent)?;
         }
-    } else {
-        desired_path
-    };
-    if let Some(parent) = final_path.parent() {
-        fs::create_dir_all(parent)?;
+        fs::write(&final_path, &restored)?;
+        info!("[restore:{}] wrote {} bytes to {}", task_id, restored.len(), final_path.display());
+        emit_progress(&app, &task_id, "done", 100, 0, 0, &format!("已恢复到 {}", final_path.display()), 0);
     }
-    fs::write(&final_path, &restored)?;
-    info!("[restore:{}] wrote {} bytes to {}", task_id, restored.len(), final_path.display());
-    emit_progress(&app, &task_id, "done", 100, 0, 0, &format!("已恢复到 {}", final_path.display()), 0);
     Ok(())
 }

@@ -1,21 +1,12 @@
 <script setup lang="ts">
 import {ref, onMounted} from "vue";
 import {
-  NCard,
-  NButton,
-  NInput,
-  NInputGroup,
-  NSwitch,
-  NFormItem,
-  NModal,
-  NSpin,
-  NCheckbox,
-  NTabs,
-  NTabPane,
-  NSelect
+  NCard, NButton, NInput, NInputGroup, NSwitch, NFormItem,
+  NModal, NSpin, NCheckbox, NTabs, NTabPane, NSelect, NTag
 } from "naive-ui";
 import {invoke} from "@tauri-apps/api/core";
 import {open} from "@tauri-apps/plugin-dialog";
+import type {SaveProfile} from "../types";
 
 const activeTab = ref("general");
 const logSize = ref(0);
@@ -28,22 +19,13 @@ function formatSize(bytes: number): string {
 }
 
 async function refreshLogSize() {
-  try {
-    logSize.value = await invoke<number>("get_log_size");
-  } catch {
-    logSize.value = 0;
-  }
+  try { logSize.value = await invoke<number>("get_log_size"); } catch { logSize.value = 0; }
 }
-
 async function confirmClearLogs() {
-  try {
-    await invoke("clear_logs");
-  } catch { /* ignore */
-  }
+  try { await invoke("clear_logs"); } catch { /* ignore */ }
   showClearConfirm.value = false;
   await refreshLogSize();
 }
-
 onMounted(refreshLogSize);
 
 defineProps<{
@@ -52,7 +34,7 @@ defineProps<{
   webdavPassword: string;
   webdavPasswordSet: boolean;
   remoteRoot: string;
-  saveRoot: string;
+  saveProfiles: SaveProfile[];
   encryptByDefault: boolean;
   encryptionPassword: string;
   useEncryptPwForRestore: boolean;
@@ -68,7 +50,6 @@ const emit = defineEmits<{
   "update:username": [v: string];
   "update:webdavPassword": [v: string];
   "update:remoteRoot": [v: string];
-  "update:saveRoot": [v: string];
   "update:encryptByDefault": [v: boolean];
   "update:encryptionPassword": [v: string];
   "update:useEncryptPwForRestore": [v: boolean];
@@ -78,55 +59,64 @@ const emit = defineEmits<{
   "update:compressConfig": [enabled: boolean, level: number];
   saveWebdav: [];
   saveEncryption: [];
-  savePath: [];
+  addProfile: [profile: SaveProfile];
+  updateProfile: [oldName: string, profile: SaveProfile];
+  deleteProfile: [name: string];
 }>();
 
+// Profile modal
+const showProfileModal = ref(false);
+const editingProfileName = ref<string | null>(null); // null = 新增
+const profileForm = ref<SaveProfile>({ name: "", saveRoot: "", saveMode: "file", saveExtension: "" });
+
+function openAddProfile() {
+  editingProfileName.value = null;
+  profileForm.value = { name: "", saveRoot: "", saveMode: "file", saveExtension: "" };
+  showProfileModal.value = true;
+}
+function openEditProfile(p: SaveProfile) {
+  editingProfileName.value = p.name;
+  profileForm.value = { ...p };
+  showProfileModal.value = true;
+}
+async function pickProfileDir() {
+  const dir = await open({ directory: true, multiple: false, title: "选择存档目录" });
+  if (dir) profileForm.value.saveRoot = dir as string;
+}
+function saveProfile() {
+  if (!profileForm.value.name.trim() || !profileForm.value.saveRoot.trim()) return;
+  if (editingProfileName.value != null) {
+    emit("updateProfile", editingProfileName.value, { ...profileForm.value });
+  } else {
+    emit("addProfile", { ...profileForm.value });
+  }
+  showProfileModal.value = false;
+}
+
+// WebDAV test
 type TestResult = {
   serverReachable: boolean; serverMessage: string;
   authOk: boolean; authMessage: string;
   remoteDirExists: boolean; remoteDirMessage: string;
   overallOk: boolean;
 };
-
 const showModal = ref(false);
 const testing = ref(false);
 const testResult = ref<TestResult | null>(null);
 const testError = ref("");
 
-function onSaveWebdav() {
-  emit('saveWebdav');
-}
-
-function updateSaveRoot(val: string) {
-  emit('update:saveRoot', val);
-  emit('savePath');
-}
-
-async function pickSaveDir() {
-  const dir = await open({directory: true, multiple: false, title: "选择存档目录"});
-  if (dir) updateSaveRoot(dir as string);
-}
-
-function openDevtools() {
-  invoke("open_devtools");
-}
-
-function openLogDir() {
-  invoke("open_log_dir");
-}
+function onSaveWebdav() { emit('saveWebdav'); }
+function openDevtools() { invoke("open_devtools"); }
+function openLogDir() { invoke("open_log_dir"); }
 
 async function runTest() {
   showModal.value = true;
   testing.value = true;
   testResult.value = null;
   testError.value = "";
-  try {
-    testResult.value = await invoke<TestResult>("test_webdav_connection");
-  } catch (e) {
-    testError.value = String(e);
-  } finally {
-    testing.value = false;
-  }
+  try { testResult.value = await invoke<TestResult>("test_webdav_connection"); }
+  catch (e) { testError.value = String(e); }
+  finally { testing.value = false; }
 }
 </script>
 
@@ -137,18 +127,6 @@ async function runTest() {
         <!-- 通用设置 Tab -->
         <n-tab-pane name="general" tab="通用设置">
           <div class="tab-content">
-            <div class="setting-row">
-              <span class="setting-label">存档目录</span>
-              <n-input-group style="width:400px; ">
-                <n-input :value="saveRoot" placeholder="C:\Users\...\Save"
-                         @update:value="updateSaveRoot"
-                         style="margin-right: 10px"
-                />
-                <n-button @click="pickSaveDir">
-                  <i class="fas fa-folder-open"></i>
-                </n-button>
-              </n-input-group>
-            </div>
             <div class="setting-row">
               <span class="setting-label">关闭窗口时</span>
               <n-select :value="closeAction" style="width:200px"
@@ -178,6 +156,31 @@ async function runTest() {
                         @update:value="(v: number) => emit('update:compressConfig', compressEnabled, v)"/>
               <span class="setting-hint">等级越高压缩率越好，但速度越慢</span>
             </div>
+          </div>
+        </n-tab-pane>
+
+        <!-- 存档设置 Tab -->
+        <n-tab-pane name="save" tab="存档配置">
+          <div class="tab-content">
+            <div class="profile-list">
+              <div v-for="p in saveProfiles" :key="p.name" class="profile-card">
+                <div class="profile-info">
+                  <span class="profile-name">{{ p.name }}</span>
+                  <span class="profile-dir">{{ p.saveRoot }}</span>
+                  <div class="profile-tags">
+                    <n-tag size="tiny" round>{{ p.saveMode === 'folder' ? '文件夹' : '单文件' }}</n-tag>
+                    <n-tag v-if="p.saveExtension" size="tiny" round>.{{ p.saveExtension.replace(/^\./, '') }}</n-tag>
+                  </div>
+                </div>
+                <div class="profile-actions">
+                  <n-button text size="small" @click="openEditProfile(p)"><i class="fas fa-pen"></i></n-button>
+                  <n-button text size="small" type="error" @click="emit('deleteProfile', p.name)"><i class="fas fa-trash"></i></n-button>
+                </div>
+              </div>
+            </div>
+            <n-button dashed style="width:100%;margin-top:10px" @click="openAddProfile">
+              <i class="fas fa-plus" style="margin-right:6px"></i>添加配置
+            </n-button>
           </div>
         </n-tab-pane>
 
@@ -310,8 +313,33 @@ async function runTest() {
       <p style="margin:0 0 16px">确定要删除所有日志文件吗？（共 {{ formatSize(logSize) }}）</p>
       <div class="row-btn" style="justify-content:flex-end">
         <n-button @click="showClearConfirm = false">取消</n-button>
-        <n-button type="error" @click="confirmClearLogs"><i class="fas fa-trash" style="margin-right:4px"></i>确认删除
-        </n-button>
+        <n-button type="error" @click="confirmClearLogs"><i class="fas fa-trash" style="margin-right:4px"></i>确认删除</n-button>
+      </div>
+    </n-modal>
+
+    <!-- 添加/编辑配置弹窗 -->
+    <n-modal v-model:show="showProfileModal" preset="card"
+      :title="editingProfileName ? '编辑配置' : '添加配置'" style="width:460px">
+      <n-form-item label="配置名称">
+        <n-input v-model:value="profileForm.name" placeholder="建议与游戏名一致，如：戴森球计划" />
+      </n-form-item>
+      <n-form-item label="存档目录">
+        <n-input-group>
+          <n-input v-model:value="profileForm.saveRoot" placeholder="C:\Users\...\Save" style="margin-right:10px" />
+          <n-button @click="pickProfileDir"><i class="fas fa-folder-open"></i></n-button>
+        </n-input-group>
+      </n-form-item>
+      <n-form-item label="存档形式">
+        <n-select v-model:value="profileForm.saveMode" style="width:200px"
+          :options="[{ label: '单文件', value: 'file' }, { label: '文件夹', value: 'folder' }]" />
+      </n-form-item>
+      <n-form-item label="存档扩展名">
+        <n-input v-model:value="profileForm.saveExtension" placeholder=".dsv" style="width:200px"
+          :disabled="profileForm.saveMode === 'folder'" />
+      </n-form-item>
+      <div class="row-btn" style="justify-content:flex-end">
+        <n-button @click="showProfileModal = false">取消</n-button>
+        <n-button type="primary" @click="saveProfile"><i class="fas fa-save" style="margin-right:4px"></i>保存</n-button>
       </div>
     </n-modal>
   </div>
@@ -413,4 +441,17 @@ async function runTest() {
 .test-overall.fail {
   color: #d03050;
 }
+
+/* Profile 列表 */
+.profile-list { display: flex; flex-direction: column; gap: 8px; }
+.profile-card {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 14px; border-radius: 8px;
+  background: var(--bg-item); border: 1px solid var(--border);
+}
+.profile-info { display: flex; flex-direction: column; gap: 4px; }
+.profile-name { font-size: 14px; font-weight: 500; color: var(--text); }
+.profile-dir { font-size: 12px; color: var(--text-muted); }
+.profile-tags { display: flex; gap: 4px; margin-top: 2px; }
+.profile-actions { display: flex; gap: 6px; }
 </style>

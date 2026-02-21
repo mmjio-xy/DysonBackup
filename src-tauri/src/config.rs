@@ -26,7 +26,22 @@ pub fn load_config() -> AppConfig {
         Ok(v) => v,
         Err(_) => return AppConfig::default(),
     };
-    serde_json::from_str(&content).unwrap_or_default()
+    let mut cfg: AppConfig = serde_json::from_str(&content).unwrap_or_default();
+    // 旧配置迁移：若无 profiles 但有 save_root，自动创建默认 profile
+    if cfg.save_profiles.is_empty() {
+        if let Some(ref root) = cfg.save_root {
+            if !root.is_empty() {
+                cfg.save_profiles.push(crate::types::SaveProfile {
+                    name: "戴森球计划".to_string(),
+                    save_root: root.clone(),
+                    save_mode: cfg.save_mode.clone(),
+                    save_extension: cfg.save_extension.clone(),
+                });
+                let _ = persist_config(&cfg);
+            }
+        }
+    }
+    cfg
 }
 
 /// 将配置序列化并写入磁盘，自动创建父目录

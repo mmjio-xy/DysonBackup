@@ -15,6 +15,9 @@ const props = defineProps<{
   onDelete: (saveName: string, backupId: string) => Promise<void>;
   onSelectDir: () => void;
   onResolveConflict: (taskId: string, action: string) => void;
+  saveProfiles: { name: string; saveRoot: string }[];
+  restoreProfileFilter: string;
+  restoreSearchQuery: string;
 }>();
 
 const emit = defineEmits<{
@@ -22,7 +25,14 @@ const emit = defineEmits<{
   restore: [backup: RemoteBackup, targetDir: string, password: string | null];
   reload: [];
   cancel: [taskId: string];
+  "update:restoreProfileFilter": [v: string];
+  "update:restoreSearchQuery": [v: string];
 }>();
+
+const profileFilterOptions = computed(() => [
+  { label: "全部配置", value: "" },
+  ...props.saveProfiles.map(p => ({ label: p.name, value: p.name })),
+]);
 
 const selected = ref<Set<string>>(new Set());
 const showDeleteConfirm = ref(false);
@@ -35,6 +45,16 @@ const showDirDialog = ref(false);
 const showPwDialog = ref(false);
 const inlinePw = ref("");
 const resolvedDir = ref("");
+
+// 根据待恢复备份的 profileName 找到对应 profile 的 saveRoot，fallback 到全局 saveRoot
+const pendingSaveRoot = computed(() => {
+  const pn = pendingBackup.value?.profileName;
+  if (pn) {
+    const p = props.saveProfiles.find(sp => sp.name === pn);
+    if (p) return p.saveRoot;
+  }
+  return props.saveRoot;
+});
 
 // ── 恢复前置检查流程 ──
 function requestRestore(b: RemoteBackup) {
@@ -51,7 +71,7 @@ function requestRestore(b: RemoteBackup) {
 }
 
 function onDirUseSaveRoot() {
-  resolvedDir.value = props.saveRoot;
+  resolvedDir.value = pendingSaveRoot.value;
   showDirDialog.value = false;
   checkPassword();
 }
@@ -272,9 +292,16 @@ function chunkCount(b: RemoteBackup) {
       <span><i class="fas fa-cloud-download-alt" style="margin-right:6px"></i>从云端恢复存档</span>
     </template>
     <template #header-extra>
-      <n-button text size="small" @click="emit('refresh')">
-        <i class="fas fa-rotate-right" style="margin-right:4px"></i>刷新列表
-      </n-button>
+      <div class="header-controls">
+        <n-select v-if="profileFilterOptions.length > 1" size="small" style="width:140px"
+          :value="restoreProfileFilter" :options="profileFilterOptions"
+          @update:value="emit('update:restoreProfileFilter', $event)" />
+        <n-input size="small" placeholder="搜索..." style="width:140px" clearable
+          :value="restoreSearchQuery" @update:value="emit('update:restoreSearchQuery', $event)" />
+        <n-button text size="small" @click="emit('refresh')">
+          <i class="fas fa-rotate-right" style="margin-right:4px"></i>刷新列表
+        </n-button>
+      </div>
     </template>
 
     <div class="restore-opts">
@@ -299,6 +326,7 @@ function chunkCount(b: RemoteBackup) {
 
             <div class="cloud-title">
               {{ g.sourceRelativePath || g.saveName }}
+              <n-tag v-if="currentBackup(g).profileName" size="tiny" round type="success" class="title-tag">{{ currentBackup(g).profileName }}</n-tag>
               <n-tag size="tiny" round class="title-tag">{{ g.versions.length }} 个版本</n-tag>
               <n-tag v-if="currentBackup(g).encrypted" size="tiny" round type="warning" class="title-tag">加密</n-tag>
               <n-tag v-if="currentBackup(g).chunked" size="tiny" round type="info" class="title-tag">分片</n-tag>
@@ -446,9 +474,9 @@ function chunkCount(b: RemoteBackup) {
   <!-- 恢复目录选择弹窗 -->
   <n-modal :show="showDirDialog" @update:show="(v: boolean) => { if (!v) onDirCancel() }" preset="card" title="选择恢复目录" style="width:440px">
     <p>尚未设置恢复目录，请选择：</p>
-    <div v-if="saveRoot" class="conflict-path">备份目录：{{ saveRoot }}</div>
+    <div v-if="pendingSaveRoot" class="conflict-path">备份目录：{{ pendingSaveRoot }}</div>
     <div class="del-actions">
-      <n-button :disabled="!saveRoot" @click="onDirUseSaveRoot">使用备份目录</n-button>
+      <n-button :disabled="!pendingSaveRoot" @click="onDirUseSaveRoot">使用备份目录</n-button>
       <n-button type="warning" @click="onDirSelectCustom">自选目录</n-button>
       <n-button type="error" ghost @click="onDirCancel">取消</n-button>
     </div>
@@ -476,6 +504,8 @@ function chunkCount(b: RemoteBackup) {
   background: var(--bg-item); padding: 8px 12px; border-radius: 6px;
   word-break: break-all; margin: 8px 0;
 }
+
+.header-controls { display: flex; align-items: center; gap: 8px; }
 
 .cloud-icon { font-size: 20px; color: var(--accent); }
 .prefix-wrap { display: flex; align-items: center; gap: 8px; }

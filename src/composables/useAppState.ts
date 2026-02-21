@@ -2,10 +2,12 @@ import { computed, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ConflictFound, LocalSaveFile, RemoteBackup, TaskDone, TaskProgress } from "../types";
+import type { ConflictFound, LocalSaveFile, RemoteBackup, SaveProfile, TaskDone, TaskProgress } from "../types";
 
 export function useAppState() {
   const saveRoot = ref("");
+  const saveMode = ref("file");
+  const saveExtension = ref("");
 
   const files = ref<LocalSaveFile[]>([]);
   const backups = ref<RemoteBackup[]>([]);
@@ -43,6 +45,13 @@ export function useAppState() {
   const compressEnabled = ref(true);
   const compressLevel = ref(6);
 
+  // Save profiles
+  const saveProfiles = ref<SaveProfile[]>([]);
+  const activeProfileName = ref("");
+  const searchQuery = ref("");
+  const restoreProfileFilter = ref("");
+  const restoreSearchQuery = ref("");
+
   function addLog(line: string) {
     const t = new Date().toTimeString().slice(0, 8);
     logs.value = [`${t} ${line}`, ...logs.value].slice(0, 200);
@@ -53,8 +62,17 @@ export function useAppState() {
     addLog(`存档目录已设置: ${saveRoot.value}`);
   }
 
+  async function saveSaveSettings() {
+    await invoke("set_save_settings", {
+      saveMode: saveMode.value,
+      saveExtension: saveExtension.value,
+    });
+  }
+
   async function scanSaves() {
-    files.value = await invoke<LocalSaveFile[]>("scan_saves");
+    const args: Record<string, unknown> = {};
+    if (activeProfileName.value) args.profileName = activeProfileName.value;
+    files.value = await invoke<LocalSaveFile[]>("scan_saves", args);
     addLog(`扫描完成，共 ${files.value.length} 个文件`);
   }
 
@@ -75,6 +93,7 @@ export function useAppState() {
   }
 
   async function startBackup(file: LocalSaveFile) {
+    const profile = saveProfiles.value.find(p => p.name === activeProfileName.value);
     const taskId = await invoke<string>("start_backup", {
       req: {
         localFilePath: file.localFilePath,
@@ -84,6 +103,8 @@ export function useAppState() {
         encryptionPassword: encryptByDefault.value ? encryptionPassword.value : null,
         useCompression: compressEnabled.value,
         compressionLevel: compressLevel.value,
+        profileName: activeProfileName.value || "戴森球计划",
+        isFolder: profile?.saveMode === "folder",
       },
     });
     taskStatus.value[taskId] = { taskId, phase: "read", percent: 0, bytesDone: 0, bytesTotal: 0, message: "", speedBps: 0 };
@@ -126,6 +147,49 @@ export function useAppState() {
     compressEnabled.value = enabled;
     compressLevel.value = level;
   }
+
+  // Profile CRUD
+  async function addProfile(input: SaveProfile) {
+    await invoke("add_save_profile", { input });
+    saveProfiles.value.push(input);
+    activeProfileName.value = input.name;
+    await scanSaves();
+  }
+
+  async function updateProfile(oldName: string, input: SaveProfile) {
+    await invoke("update_save_profile", { oldName, input });
+    const idx = saveProfiles.value.findIndex(p => p.name === oldName);
+    if (idx >= 0) saveProfiles.value[idx] = input;
+    if (activeProfileName.value === oldName) activeProfileName.value = input.name;
+    await scanSaves();
+  }
+
+  async function deleteProfile(name: string) {
+    await invoke("delete_save_profile", { name });
+    saveProfiles.value = saveProfiles.value.filter(p => p.name !== name);
+    if (activeProfileName.value === name) {
+      activeProfileName.value = saveProfiles.value[0]?.name ?? "";
+      await scanSaves();
+    }
+  }
+
+  const filteredFiles = computed(() => {
+    if (!searchQuery.value) return files.value;
+    const q = searchQuery.value.toLowerCase();
+    return files.value.filter(f => f.relativePath.toLowerCase().includes(q) || f.saveName.toLowerCase().includes(q));
+  });
+
+  const filteredBackups = computed(() => {
+    let list = backups.value;
+    if (restoreProfileFilter.value) {
+      list = list.filter(b => b.profileName === restoreProfileFilter.value);
+    }
+    if (restoreSearchQuery.value) {
+      const q = restoreSearchQuery.value.toLowerCase();
+      list = list.filter(b => b.saveName.toLowerCase().includes(q) || b.sourceRelativePath.toLowerCase().includes(q));
+    }
+    return list;
+  });
 
   async function saveEncryptionSettings() {
     await invoke("save_encryption_settings", {
@@ -179,8 +243,11 @@ export function useAppState() {
     // 先读取已保存的配置
     const cfg = await invoke<{
       saveRoot?: string;
+      saveMode?: string;
+      saveExtension?: string;
       webdav?: { baseUrl: string; username: string; remoteRoot: string };
       webdavPasswordSet?: boolean;
+      saveProfiles?: SaveProfile[];
       debugMode?: boolean;
       encryptByDefault?: boolean;
       encryptionPasswordSet?: boolean;
@@ -189,6 +256,8 @@ export function useAppState() {
       compressLevel?: number;
     }>("get_config");
     if (cfg.saveRoot) saveRoot.value = cfg.saveRoot;
+    if (cfg.saveMode) saveMode.value = cfg.saveMode;
+    if (cfg.saveExtension) saveExtension.value = cfg.saveExtension;
     if (cfg.webdav) {
       baseUrl.value = cfg.webdav.baseUrl;
       username.value = cfg.webdav.username;
@@ -200,6 +269,10 @@ export function useAppState() {
     closeAction.value = cfg.closeAction ?? "ask";
     compressEnabled.value = cfg.compressEnabled ?? true;
     compressLevel.value = cfg.compressLevel ?? 6;
+    saveProfiles.value = cfg.saveProfiles ?? [];
+    if (saveProfiles.value.length > 0) {
+      activeProfileName.value = saveProfiles.value[0].name;
+    }
     if (cfg.encryptionPasswordSet) {
       try {
         encryptionPassword.value = await invoke<string>("get_encryption_password");
@@ -234,7 +307,7 @@ export function useAppState() {
   });
 
   return {
-    saveRoot, files, backups, logs, taskStatus, lastTaskId, lastTask,
+    saveRoot, saveMode, saveExtension, files, backups, logs, taskStatus, lastTaskId, lastTask,
     baseUrl, username, webdavPassword, webdavPasswordSet, remoteRoot,
     encryptByDefault, encryptionPassword,
     restoreTargetDir, decryptionPassword, useEncryptPwForRestore, conflictState,
@@ -242,7 +315,10 @@ export function useAppState() {
     debugMode, setDebugMode, saveEncryptionSettings,
     closeAction, setCloseAction,
     compressEnabled, compressLevel, setCompressConfig,
-    savePath, scanSaves, saveWebDavConfig, testWebDav, startBackup, loadBackups,
+    saveProfiles, activeProfileName, searchQuery, filteredFiles,
+    restoreProfileFilter, restoreSearchQuery, filteredBackups,
+    addProfile, updateProfile, deleteProfile,
+    savePath, saveSaveSettings, scanSaves, saveWebDavConfig, testWebDav, startBackup, loadBackups,
     restore, cancelTask, deleteBackup, selectRestoreDir, resolveConflict,
   };
 }

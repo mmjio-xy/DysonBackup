@@ -38,8 +38,11 @@ fn get_config(state: State<'_, Arc<AppState>>) -> Result<ConfigResp, String> {
         .unwrap_or(false);
     Ok(ConfigResp {
         save_root: cfg.save_root.clone(),
+        save_mode: cfg.save_mode.clone(),
+        save_extension: cfg.save_extension.clone(),
         webdav: cfg.webdav.clone(),
         webdav_password_set: password_set,
+        save_profiles: cfg.save_profiles.clone(),
         debug_mode: cfg.debug_mode,
         encrypt_by_default: cfg.encrypt_by_default,
         encryption_password_set: keyring_get("encryption_password").is_ok(),
@@ -144,48 +147,140 @@ fn set_save_root(path: String, state: State<'_, Arc<AppState>>) -> Result<(), St
     persist_config(&cfg).map_err(|e| e.to_string())
 }
 
-/// 扫描存档目录，返回文件列表（SHA256 延迟到备份时计算）
+/// 设置存档模式和扩展名并持久化
 #[tauri::command]
-fn scan_saves(state: State<'_, Arc<AppState>>) -> Result<Vec<LocalSaveFile>, String> {
-    let configured_root = state.config.lock()
-        .map_err(|_| "Config lock poisoned".to_string())?
-        .save_root.clone();
-    let root = if let Some(r) = configured_root {
-        PathBuf::from(r)
+fn set_save_settings(save_mode: String, save_extension: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let mut cfg = state.config.lock().map_err(|_| "Config lock poisoned".to_string())?;
+    cfg.save_mode = save_mode;
+    cfg.save_extension = save_extension;
+    persist_config(&cfg).map_err(|e| e.to_string())
+}
+
+/// 添加存档配置
+#[tauri::command]
+fn add_save_profile(input: types::SaveProfileInput, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let dir = PathBuf::from(&input.save_root);
+    if !dir.is_dir() { return Err("目录不存在".to_string()); }
+    let mut cfg = state.config.lock().map_err(|_| "lock".to_string())?;
+    if cfg.save_profiles.iter().any(|p| p.name == input.name) {
+        return Err(format!("配置名 '{}' 已存在", input.name));
+    }
+    cfg.save_profiles.push(types::SaveProfile {
+        name: input.name, save_root: input.save_root,
+        save_mode: input.save_mode, save_extension: input.save_extension,
+    });
+    persist_config(&cfg).map_err(|e| e.to_string())
+}
+
+/// 更新存档配置
+#[tauri::command]
+fn update_save_profile(old_name: String, input: types::SaveProfileInput, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let dir = PathBuf::from(&input.save_root);
+    if !dir.is_dir() { return Err("目录不存在".to_string()); }
+    let mut cfg = state.config.lock().map_err(|_| "lock".to_string())?;
+    if input.name != old_name && cfg.save_profiles.iter().any(|x| x.name == input.name) {
+        return Err(format!("配置名 '{}' 已存在", input.name));
+    }
+    let p = cfg.save_profiles.iter_mut().find(|p| p.name == old_name)
+        .ok_or_else(|| format!("配置 '{}' 不存在", old_name))?;
+    p.name = input.name; p.save_root = input.save_root;
+    p.save_mode = input.save_mode; p.save_extension = input.save_extension;
+    persist_config(&cfg).map_err(|e| e.to_string())
+}
+
+/// 删除存档配置
+#[tauri::command]
+fn delete_save_profile(name: String, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    let mut cfg = state.config.lock().map_err(|_| "lock".to_string())?;
+    cfg.save_profiles.retain(|p| p.name != name);
+    persist_config(&cfg).map_err(|e| e.to_string())
+}
+
+/// 扫描存档目录，根据 save_mode 和 save_extension 过滤
+#[tauri::command]
+fn scan_saves(state: State<'_, Arc<AppState>>, profile_name: Option<String>) -> Result<Vec<LocalSaveFile>, String> {
+    let cfg = state.config.lock().map_err(|_| "Config lock poisoned".to_string())?;
+    // 优先从 profile 查找配置
+    let (root, save_mode, raw_ext) = if let Some(ref pn) = profile_name {
+        let p = cfg.save_profiles.iter().find(|p| p.name == *pn)
+            .ok_or_else(|| format!("Profile '{}' not found", pn))?;
+        (PathBuf::from(&p.save_root), p.save_mode.clone(), p.save_extension.clone())
     } else {
-        detect_windows_save_candidates()
-            .into_iter()
-            .find(|p| p.exists() && p.is_dir())
-            .ok_or_else(|| "No save root found. Set one manually.".to_string())?
+        let r = if let Some(r) = cfg.save_root.clone() {
+            PathBuf::from(r)
+        } else {
+            detect_windows_save_candidates()
+                .into_iter()
+                .find(|p| p.exists() && p.is_dir())
+                .ok_or_else(|| "No save root found. Set one manually.".to_string())?
+        };
+        (r, cfg.save_mode.clone(), cfg.save_extension.clone())
     };
-    log::info!("[scan_saves] root={}", root.display());
+    drop(cfg);
+
+    // 规范化扩展名：去掉前导 "."，统一小写
+    let filter_ext = raw_ext.trim().trim_start_matches('.').to_ascii_lowercase();
+
+    log::info!("[scan_saves] root={} mode={} ext={}", root.display(), save_mode, filter_ext);
 
     let mut items = Vec::new();
-    for entry in walkdir::WalkDir::new(&root) {
-        let entry = entry.map_err(|e| e.to_string())?;
-        if !entry.file_type().is_file() { continue; }
-        let path = entry.path();
-        let ext = path.extension()
-            .map(|v| v.to_string_lossy().to_ascii_lowercase())
-            .unwrap_or_default();
-        if ext == "tmp" || ext == "lock" { continue; }
-        let rel = path.strip_prefix(&root).map_err(|e| e.to_string())?.to_path_buf();
-        let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
-        let mtime = metadata.modified().ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        items.push(LocalSaveFile {
-            local_file_path: path.to_string_lossy().to_string(),
-            relative_path: rel.to_string_lossy().replace('\\', "/"),
-            save_name: save_name_from_relative(&rel),
-            size: metadata.len(),
-            mtime_unix: mtime,
-            sha256: String::new(),
-        });
+
+    if save_mode == "folder" {
+        // 文件夹模式：只扫描一级子目录
+        for entry in fs::read_dir(&root).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_type().map_err(|e| e.to_string())?.is_dir() { continue; }
+            let path = entry.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            let metadata = fs::metadata(&path).map_err(|e| e.to_string())?;
+            let mtime = metadata.modified().ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let size: u64 = walkdir::WalkDir::new(&path).into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+                .filter_map(|e| e.metadata().ok())
+                .map(|m| m.len()).sum();
+            items.push(LocalSaveFile {
+                local_file_path: path.to_string_lossy().to_string(),
+                relative_path: name.clone(),
+                save_name: name,
+                size,
+                mtime_unix: mtime,
+                sha256: String::new(),
+            });
+        }
+    } else {
+        // 单文件模式
+        for entry in walkdir::WalkDir::new(&root) {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if !entry.file_type().is_file() { continue; }
+            let path = entry.path();
+            let ext = path.extension()
+                .map(|v| v.to_string_lossy().to_ascii_lowercase())
+                .unwrap_or_default();
+            if ext == "tmp" || ext == "lock" { continue; }
+            if !filter_ext.is_empty() && ext != filter_ext { continue; }
+            let rel = path.strip_prefix(&root).map_err(|e| e.to_string())?.to_path_buf();
+            let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
+            let mtime = metadata.modified().ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            items.push(LocalSaveFile {
+                local_file_path: path.to_string_lossy().to_string(),
+                relative_path: rel.to_string_lossy().replace('\\', "/"),
+                save_name: save_name_from_relative(&rel),
+                size: metadata.len(),
+                mtime_unix: mtime,
+                sha256: String::new(),
+            });
+        }
     }
+
     items.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
-    log::info!("[scan_saves] found {} files", items.len());
+    log::info!("[scan_saves] found {} items", items.len());
     Ok(items)
 }
 
@@ -325,7 +420,22 @@ async fn list_remote_backups(
     for sn in save_names {
         let backups = client.list_child_dirs(&format!("{root}/v1/{sn}")).await.unwrap_or_default();
         for bid in backups {
-            if let Ok(m) = fetch_manifest(&client, &webdav_cfg.remote_root, &sn, &bid).await {
+            if let Ok(mut m) = fetch_manifest(&client, &webdav_cfg.remote_root, &sn, &bid).await {
+                // 旧 manifest 迁移：补写 profile_name
+                if m.profile_name.is_empty() {
+                    m.profile_name = "戴森球计划".to_string();
+                    let client2 = client.clone();
+                    let root2 = root.clone();
+                    let sn2 = sn.clone();
+                    let bid2 = bid.clone();
+                    let m_json = serde_json::to_vec_pretty(&m).ok();
+                    if let Some(json) = m_json {
+                        tauri::async_runtime::spawn(async move {
+                            let path = format!("{}/v1/{}/{}/manifest.json", root2, sn2, bid2);
+                            let _ = client2.put_bytes(&path, json).await;
+                        });
+                    }
+                }
                 out.push(RemoteBackupVersion {
                     save_name: sn.clone(),
                     backup_id: m.backup_id,
@@ -336,6 +446,8 @@ async fn list_remote_backups(
                     chunked: m.chunked,
                     compressed: m.compressed,
                     source_relative_path: m.source_relative_path,
+                    profile_name: m.profile_name,
+                    is_tar: m.is_tar,
                 });
             }
         }
@@ -608,6 +720,10 @@ pub fn run() {
             save_encryption_settings,
             get_encryption_password,
             set_save_root,
+            set_save_settings,
+            add_save_profile,
+            update_save_profile,
+            delete_save_profile,
             scan_saves,
             save_webdav_config,
             test_webdav_connection,

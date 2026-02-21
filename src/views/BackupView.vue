@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
-import { NCard, NButton, NProgress, NTag, NScrollbar, NEmpty, NList, NListItem } from "naive-ui";
-import type { LocalSaveFile, TaskProgress } from "../types";
+import { NCard, NButton, NProgress, NTag, NScrollbar, NEmpty, NList, NListItem, NSelect, NInput } from "naive-ui";
+import type { LocalSaveFile, SaveProfile, TaskProgress } from "../types";
 import { formatSize, formatTime, formatSpeed } from "../utils/format";
 
 const props = defineProps<{
@@ -11,13 +11,22 @@ const props = defineProps<{
   lastTaskId: string;
   encryptEnabled: boolean;
   compressEnabled: boolean;
+  saveProfiles: SaveProfile[];
+  activeProfileName: string;
+  searchQuery: string;
 }>();
 
 const emit = defineEmits<{
   scan: [];
   backup: [file: LocalSaveFile];
   cancel: [taskId: string];
+  "update:activeProfileName": [v: string];
+  "update:searchQuery": [v: string];
 }>();
+
+const profileOptions = computed(() =>
+  props.saveProfiles.map(p => ({ label: p.name, value: p.name }))
+);
 
 const BACKUP_PHASES = [
   { key: "read",     label: "读取文件",  icon: "fas fa-file-alt" },
@@ -83,9 +92,16 @@ const isTerminal = computed(() =>
         <span><i class="far fa-save" style="margin-right:6px"></i>本地存档</span>
       </template>
       <template #header-extra>
-        <n-button text size="small" @click="emit('scan')">
-          <i class="fas fa-sync-alt" style="margin-right:4px"></i>刷新
-        </n-button>
+        <div class="header-controls">
+          <n-select v-if="profileOptions.length > 0" size="small" style="width:140px"
+            :value="activeProfileName" :options="profileOptions"
+            @update:value="emit('update:activeProfileName', $event)" />
+          <n-input size="small" placeholder="搜索..." style="width:140px" clearable
+            :value="searchQuery" @update:value="emit('update:searchQuery', $event)" />
+          <n-button text size="small" @click="emit('scan')">
+            <i class="fas fa-sync-alt" style="margin-right:4px"></i>刷新
+          </n-button>
+        </div>
       </template>
       <n-empty v-if="files.length === 0" description="暂无存档" />
       <n-scrollbar v-else style="max-height:calc(100vh - 220px)">
@@ -188,6 +204,7 @@ const isTerminal = computed(() =>
 
 .save-name { color: var(--text); font-weight: 500; font-size: 14px; }
 .save-meta { color: var(--text-muted); font-size: 12px; margin-top: 2px; }
+.header-controls { display: flex; align-items: center; gap: 8px; }
 
 /* 进度头部 */
 .progress-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }

@@ -15,7 +15,14 @@ use tokio::sync::oneshot;
 #[serde(rename_all = "camelCase")]
 pub struct AppConfig {
     pub save_root: Option<String>,
+    /// "file" | "folder"
+    #[serde(default = "default_save_mode")]
+    pub save_mode: String,
+    #[serde(default)]
+    pub save_extension: String,
     pub webdav: Option<WebDavConfig>,
+    #[serde(default)]
+    pub save_profiles: Vec<SaveProfile>,
     #[serde(default)]
     pub debug_mode: bool,
     #[serde(default)]
@@ -31,7 +38,32 @@ pub struct AppConfig {
     // pub auto_watch: bool,
 }
 
+/// 存档配置（一个游戏对应一个 profile）
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProfile {
+    pub name: String,
+    pub save_root: String,
+    #[serde(default = "default_save_mode")]
+    pub save_mode: String,
+    #[serde(default)]
+    pub save_extension: String,
+}
+
+/// 前端提交的 SaveProfile 输入
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SaveProfileInput {
+    pub name: String,
+    pub save_root: String,
+    #[serde(default = "default_save_mode")]
+    pub save_mode: String,
+    #[serde(default)]
+    pub save_extension: String,
+}
+
 fn default_close_action() -> String { "ask".to_string() }
+fn default_save_mode() -> String { "file".to_string() }
 fn default_true() -> bool { true }
 fn default_compress_level() -> i32 { 6 }
 
@@ -89,8 +121,11 @@ pub struct WebDavConfigInput {
 #[serde(rename_all = "camelCase")]
 pub struct ConfigResp {
     pub save_root: Option<String>,
+    pub save_mode: String,
+    pub save_extension: String,
     pub webdav: Option<WebDavConfig>,
     pub webdav_password_set: bool,
+    pub save_profiles: Vec<SaveProfile>,
     pub debug_mode: bool,
     pub encrypt_by_default: bool,
     pub encryption_password_set: bool,
@@ -125,6 +160,10 @@ pub struct BackupRequest {
     pub use_compression: bool,
     #[serde(default = "default_compress_level")]
     pub compression_level: i32,
+    #[serde(default)]
+    pub profile_name: String,
+    #[serde(default)]
+    pub is_folder: bool,
 }
 
 /// 文件冲突处理策略
@@ -158,6 +197,8 @@ pub struct RemoteBackupVersion {
     pub chunked: bool,
     pub compressed: bool,
     pub source_relative_path: String,
+    pub profile_name: String,
+    pub is_tar: bool,
 }
 
 // ── 冲突询问事件 ─────────────────────────────────────────────
@@ -225,6 +266,10 @@ pub struct ManifestV1 {
     pub zstd_level: i32,
     #[serde(default = "default_true")]
     pub compressed: bool,
+    #[serde(default)]
+    pub profile_name: String,
+    #[serde(default)]
+    pub is_tar: bool,
 }
 
 /// AES-256-GCM 加密元数据，存入 manifest
