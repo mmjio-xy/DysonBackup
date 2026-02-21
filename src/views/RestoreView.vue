@@ -6,6 +6,7 @@ import { formatSize, formatSpeed } from "../utils/format";
 
 const props = defineProps<{
   backups: RemoteBackup[];
+  localBackups: RemoteBackup[];
   restoreTargetDir: string;
   saveRoot: string;
   encryptionPassword: string;
@@ -24,6 +25,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   refresh: [];
   restore: [backup: RemoteBackup, targetDir: string, password: string | null];
+  "local-restore": [backup: RemoteBackup, targetDir: string, password: string | null];
   reload: [];
   cancel: [taskId: string];
   "update:restoreProfileFilter": [v: string];
@@ -38,9 +40,11 @@ const profileFilterOptions = computed(() => [
 const selected = ref<Set<string>>(new Set());
 const showDeleteConfirm = ref(false);
 const deleting = ref(false);
+const showFolderDeleteConfirm = ref(false);
 
 // 前置检查弹窗状态
 const pendingBackup = ref<RemoteBackup | null>(null);
+const pendingSource = ref<"cloud" | "local">("cloud");
 const lastRestoredBackup = ref<RemoteBackup | null>(null);
 const showDirDialog = ref(false);
 const showPwDialog = ref(false);
@@ -58,8 +62,9 @@ const pendingSaveRoot = computed(() => {
 });
 
 // ── 恢复前置检查流程 ──
-function requestRestore(b: RemoteBackup) {
+function requestRestore(b: RemoteBackup, source: "cloud" | "local" = "cloud") {
   pendingBackup.value = b;
+  pendingSource.value = source;
   resolvedDir.value = "";
   inlinePw.value = "";
   // 步骤1：检查恢复目录
@@ -131,7 +136,11 @@ function doRestore(pw: string | null) {
   const b = pendingBackup.value;
   if (!b || !resolvedDir.value) return;
   lastRestoredBackup.value = b;
-  emit("restore", b, resolvedDir.value, pw);
+  if (pendingSource.value === "local") {
+    emit("local-restore", b, resolvedDir.value, pw);
+  } else {
+    emit("restore", b, resolvedDir.value, pw);
+  }
   pendingBackup.value = null;
 }
 
@@ -235,32 +244,93 @@ function verifyState(target: "download" | "decompress"): VerifyState {
 
 // ── 分组逻辑 ──
 const selectedVersions = ref<Record<string, string>>({});
+const selectedSource = ref<Record<string, "cloud" | "local">>({});
+
+const sourceOptions = [
+  { label: "云端版本", value: "cloud" },
+  { label: "本地版本", value: "local" },
+];
 
 type BackupGroup = {
   saveName: string;
   sourceRelativePath: string;
   versions: RemoteBackup[];
   selectedId: string;
+  hasCloud: boolean;
+  hasLocal: boolean;
 };
 
-const groupedBackups = computed<BackupGroup[]>(() => {
+// 按 saveName 分组本地备份
+const localGroupMap = computed(() => {
+  const map = new Map<string, RemoteBackup[]>();
+  for (const b of props.localBackups) {
+    const arr = map.get(b.saveName) || [];
+    arr.push(b);
+    map.set(b.saveName, arr);
+  }
+  for (const versions of map.values()) {
+    versions.sort((a, c) => c.createdAt.localeCompare(a.createdAt));
+  }
+  return map;
+});
+
+// 按 saveName 分组云端备份
+const cloudGroupMap = computed(() => {
   const map = new Map<string, RemoteBackup[]>();
   for (const b of props.backups) {
     const arr = map.get(b.saveName) || [];
     arr.push(b);
     map.set(b.saveName, arr);
   }
-  const groups: BackupGroup[] = [];
-  for (const [saveName, versions] of map) {
+  for (const versions of map.values()) {
     versions.sort((a, c) => c.createdAt.localeCompare(a.createdAt));
-    const selId = selectedVersions.value[saveName] || versions[0].backupId;
-    groups.push({ saveName, sourceRelativePath: versions[0].sourceRelativePath, versions, selectedId: selId });
+  }
+  return map;
+});
+
+const groupedBackups = computed<BackupGroup[]>(() => {
+  const allNames = new Set([
+    ...cloudGroupMap.value.keys(),
+    ...localGroupMap.value.keys(),
+  ]);
+  const groups: BackupGroup[] = [];
+  for (const saveName of allNames) {
+    const cloud = cloudGroupMap.value.get(saveName);
+    const local = localGroupMap.value.get(saveName);
+    const source = selectedSource.value[saveName] || (cloud ? "cloud" : "local");
+    const versions = (source === "local" ? local : cloud) || [];
+    if (versions.length === 0) continue;
+    const selId = selectedVersions.value[`${source}:${saveName}`] || versions[0].backupId;
+    groups.push({
+      saveName,
+      sourceRelativePath: versions[0].sourceRelativePath,
+      versions,
+      selectedId: selId,
+      hasCloud: !!cloud && cloud.length > 0,
+      hasLocal: !!local && local.length > 0,
+    });
   }
   return groups;
 });
 
 function currentBackup(g: BackupGroup): RemoteBackup {
   return g.versions.find(v => v.backupId === g.selectedId) || g.versions[0];
+}
+
+function groupSource(g: BackupGroup): "cloud" | "local" {
+  return selectedSource.value[g.saveName] || (g.hasCloud ? "cloud" : "local");
+}
+
+function onSourceChange(g: BackupGroup, v: "cloud" | "local") {
+  selectedSource.value[g.saveName] = v;
+  // 切换来源时清除版本选择，让 computed 自动选第一个
+  delete selectedVersions.value[`cloud:${g.saveName}`];
+  delete selectedVersions.value[`local:${g.saveName}`];
+}
+
+function onVersionChange(g: BackupGroup, v: string) {
+  const src = groupSource(g);
+  selectedVersions.value[`${src}:${g.saveName}`] = v;
 }
 
 function versionOptions(g: BackupGroup) {
@@ -312,7 +382,7 @@ function chunkCount(b: RemoteBackup) {
   <div>
   <n-card>
     <template #header>
-      <span><i class="fas fa-cloud-download-alt" style="margin-right:6px"></i>从云端恢复存档</span>
+      <span><i class="fas fa-cloud-download-alt" style="margin-right:6px"></i>恢复存档</span>
     </template>
     <template #header-extra>
       <div class="header-controls">
@@ -335,7 +405,7 @@ function chunkCount(b: RemoteBackup) {
       <span v-else class="selected-dir placeholder">未选择目录</span>
     </div>
 
-    <n-empty v-if="backups.length === 0" description="暂无云端备份" style="margin-top:16px" />
+    <n-empty v-if="backups.length === 0 && localBackups.length === 0" description="暂无备份" style="margin-top:16px" />
     <template v-else>
       <n-scrollbar style="max-height:calc(100vh - 340px)">
         <n-list hoverable>
@@ -355,30 +425,32 @@ function chunkCount(b: RemoteBackup) {
               <n-tag v-if="currentBackup(g).chunked" size="tiny" round type="info" class="title-tag">分片</n-tag>
             </div>
 
-            <div v-if="g.versions.length > 1" class="version-select">
-              <n-select size="small" :value="g.selectedId"
-                @update:value="(v: string) => selectedVersions[g.saveName] = v"
-                :options="versionOptions(g)" />
+            <div class="version-select">
+              <n-select v-if="g.hasCloud && g.hasLocal" size="small" style="width:110px"
+                :value="groupSource(g)" :options="sourceOptions"
+                @update:value="(v: string) => onSourceChange(g, v as 'cloud' | 'local')" />
+              <n-tag v-else size="tiny" round :type="g.hasLocal ? 'default' : 'info'">
+                {{ g.hasLocal ? '本地' : '云端' }}
+              </n-tag>
+              <n-select v-if="g.versions.length > 1" size="small" style="flex:1"
+                :value="g.selectedId" :options="versionOptions(g)"
+                @update:value="(v: string) => onVersionChange(g, v)" />
             </div>
-            <div v-else class="cloud-details">
+
+            <div v-if="g.versions.length <= 1" class="cloud-details">
               <span><i class="far fa-calendar"></i> {{ currentBackup(g).createdAt.slice(0, 16).replace("T", " ") }}</span>
               <span><i class="fas fa-weight-hanging"></i> {{ formatSize(currentBackup(g).compressedSize) }}</span>
             </div>
 
-            <div class="cloud-details" v-if="g.versions.length > 1">
-              <span><i class="fas fa-weight-hanging"></i> {{ formatSize(currentBackup(g).compressedSize) }}</span>
-              <span v-if="currentBackup(g).chunked"><i class="fas fa-cut"></i> {{ chunkCount(currentBackup(g)) }} 片</span>
-              <span v-if="currentBackup(g).encrypted" class="detail-encrypted"><i class="fas fa-lock"></i> 需要密码</span>
-              <span v-else class="detail-plain"><i class="fas fa-unlock-alt"></i> 无加密</span>
-            </div>
-            <div v-else class="cloud-details">
+            <div class="cloud-details">
+              <span v-if="g.versions.length > 1"><i class="fas fa-weight-hanging"></i> {{ formatSize(currentBackup(g).compressedSize) }}</span>
               <span v-if="currentBackup(g).chunked"><i class="fas fa-cut"></i> {{ chunkCount(currentBackup(g)) }} 片</span>
               <span v-if="currentBackup(g).encrypted" class="detail-encrypted"><i class="fas fa-lock"></i> 需要密码</span>
               <span v-else class="detail-plain"><i class="fas fa-unlock-alt"></i> 无加密</span>
             </div>
 
             <template #suffix>
-              <n-button size="small" round type="primary" @click="requestRestore(currentBackup(g))">
+              <n-button size="small" round type="primary" @click="requestRestore(currentBackup(g), groupSource(g))">
                 <i class="fas fa-download" style="margin-right:4px"></i>恢复
               </n-button>
             </template>
@@ -481,17 +553,36 @@ function chunkCount(b: RemoteBackup) {
   </n-modal>
 
   <!-- 冲突询问弹窗 -->
-  <n-modal :show="!!conflictState" preset="card" title="文件冲突" style="width:440px" :mask-closable="false">
+  <n-modal :show="!!conflictState && !showFolderDeleteConfirm" preset="card" title="文件冲突" style="width:440px" :mask-closable="false">
     <template v-if="conflictState">
-      <p>目标位置已存在同名文件：</p>
+      <p>目标位置已存在同名{{ conflictState.isFolder ? '文件夹' : '文件' }}：</p>
       <div class="conflict-path">{{ conflictState.filePath }}</div>
       <p>请选择处理方式：</p>
-      <div class="del-actions">
+      <div class="del-actions" v-if="conflictState.isFolder">
+        <n-button @click="props.onResolveConflict(conflictState!.taskId, 'cancel')">取消恢复</n-button>
+        <n-button type="error" @click="showFolderDeleteConfirm = true">
+          <i class="fas fa-trash-alt" style="margin-right:4px"></i>删除并恢复
+        </n-button>
+      </div>
+      <div class="del-actions" v-else>
         <n-button @click="props.onResolveConflict(conflictState!.taskId, 'cancel')">取消恢复</n-button>
         <n-button @click="props.onResolveConflict(conflictState!.taskId, 'rename')">重命名</n-button>
         <n-button type="warning" @click="props.onResolveConflict(conflictState!.taskId, 'overwrite')">覆盖</n-button>
       </div>
     </template>
+  </n-modal>
+
+  <!-- 文件夹删除二次确认弹窗 -->
+  <n-modal v-model:show="showFolderDeleteConfirm" preset="card" title="确认删除" style="width:440px" :mask-closable="false">
+    <p>即将<b>永久删除</b>以下文件夹及其所有内容：</p>
+    <div class="conflict-path">{{ conflictState?.filePath }}</div>
+    <p style="color:#d03050;font-size:12px">此操作不可撤销，请确认该文件夹可以安全删除。</p>
+    <div class="del-actions">
+      <n-button @click="showFolderDeleteConfirm = false">返回</n-button>
+      <n-button type="error" @click="showFolderDeleteConfirm = false; props.onResolveConflict(conflictState!.taskId, 'delete')">
+        <i class="fas fa-trash-alt" style="margin-right:4px"></i>确认删除并恢复
+      </n-button>
+    </div>
   </n-modal>
 
   <!-- 恢复目录选择弹窗 -->
@@ -556,7 +647,7 @@ function chunkCount(b: RemoteBackup) {
 .detail-encrypted { color: #f0a020; }
 .detail-plain { color: var(--text-muted); }
 
-.version-select { margin-top: 6px; max-width: 320px; }
+.version-select { margin-top: 6px; max-width: 420px; display: flex; align-items: center; gap: 8px; }
 
 .batch-bar {
   display: flex; align-items: center; gap: 12px;

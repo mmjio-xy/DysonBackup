@@ -18,8 +18,8 @@ use tauri::{AppHandle, Emitter};
 use crate::config::get_webdav_runtime_config;
 use crate::crypto::{decrypt_aes_gcm, decrypt_aes_gcm_stream, encrypt_aes_gcm_stream, sha256_hex};
 use crate::types::{
-    AppState, BackupRequest, ChunkMeta, ConflictFound, ConflictPolicy, ManifestV1,
-    RestoreRequest, TaskProgress,
+    AppState, BackupRequest, ChunkMeta, ConflictFound, ConflictPolicy, LocalRestoreRequest,
+    ManifestV1, RestoreRequest, TaskProgress,
 };
 use crate::webdav::WebDavClient;
 
@@ -230,75 +230,75 @@ pub async fn run_backup_task(
         info!("[backup:{}] stream-encrypted, payload now {} bytes", task_id, payload.len());
     }
 
-    // 4. 创建远端目录并上传（大文件分片，小文件整体）
-    let (webdav_cfg, webdav_password) = get_webdav_runtime_config(&state)?;
-    info!("[backup:{}] webdav base_url={} remote_root={}", task_id, webdav_cfg.base_url, webdav_cfg.remote_root);
-    let client = WebDavClient::new(&webdav_cfg.base_url, &webdav_cfg.username, &webdav_password)?;
-    let backup_id = generate_backup_id();
-    let remote_prefix = format!(
-        "{}/v1/{}/{}",
-        normalize_root(&webdav_cfg.remote_root), req.save_name, backup_id
-    );
-    info!("[backup:{}] remote_prefix={} chunked={} payload_size={}", task_id, remote_prefix, payload.len() > SPLIT_THRESHOLD_BYTES, payload.len());
-    client.mkcol_recursive(&remote_prefix).await?;
-
+    // 4. WebDAV 上传（可跳过）
     let payload_sha = sha256_hex(&payload);
     let mut chunks = Vec::new();
     let chunked = payload.len() > SPLIT_THRESHOLD_BYTES;
+    let backup_id = generate_backup_id();
 
-    if chunked {
-        // 分片上传
-        client.mkcol_recursive(&format!("{remote_prefix}/chunks")).await?;
-        let total = payload.len() as u64;
-        let upload_start = Instant::now();
-        let mut uploaded_so_far = 0u64;
-        for (index, chunk) in payload.chunks(CHUNK_SIZE_BYTES).enumerate() {
-            should_cancel(&flag)?;
-            let chunk_name = format!("chunk_{:06}.part", index + 1);
-            let chunk_len = chunk.len() as u64;
-            let base_uploaded = uploaded_so_far;
+    if req.upload_webdav {
+        let (webdav_cfg, webdav_password) = get_webdav_runtime_config(&state)?;
+        info!("[backup:{}] webdav base_url={} remote_root={}", task_id, webdav_cfg.base_url, webdav_cfg.remote_root);
+        let client = WebDavClient::new(&webdav_cfg.base_url, &webdav_cfg.username, &webdav_password)?;
+        let remote_prefix = format!(
+            "{}/v1/{}/{}",
+            normalize_root(&webdav_cfg.remote_root), req.save_name, backup_id
+        );
+        client.mkcol_recursive(&remote_prefix).await?;
+
+        if chunked {
+            client.mkcol_recursive(&format!("{remote_prefix}/chunks")).await?;
+            let total = payload.len() as u64;
+            let upload_start = Instant::now();
+            let mut uploaded_so_far = 0u64;
+            for (index, chunk) in payload.chunks(CHUNK_SIZE_BYTES).enumerate() {
+                should_cancel(&flag)?;
+                let chunk_name = format!("chunk_{:06}.part", index + 1);
+                let chunk_len = chunk.len() as u64;
+                let base_uploaded = uploaded_so_far;
+                let app2 = app.clone();
+                let tid2 = task_id.clone();
+                let t0 = upload_start;
+                client.put_bytes_with_progress(
+                    &format!("{remote_prefix}/chunks/{chunk_name}"),
+                    chunk.to_vec(),
+                    flag.clone(),
+                    move |done, _chunk_total| {
+                        let global_done = base_uploaded + done;
+                        let pct = 40 + ((global_done as f64 / total as f64) * 50.0) as u8;
+                        let elapsed = t0.elapsed().as_secs_f64().max(0.001);
+                        let speed = (global_done as f64 / elapsed) as u64;
+                        emit_progress(&app2, &tid2, "upload", pct.min(92), global_done, total, "上传中", speed);
+                    },
+                ).await?;
+                uploaded_so_far += chunk_len;
+                chunks.push(ChunkMeta {
+                    index,
+                    name: chunk_name,
+                    size: chunk.len() as u64,
+                    sha256: sha256_hex(chunk),
+                });
+            }
+        } else {
+            let upload_start = Instant::now();
             let app2 = app.clone();
             let tid2 = task_id.clone();
-            let t0 = upload_start;
             client.put_bytes_with_progress(
-                &format!("{remote_prefix}/chunks/{chunk_name}"),
-                chunk.to_vec(),
+                &format!("{remote_prefix}/payload.bin"),
+                payload.clone(),
                 flag.clone(),
-                move |done, _chunk_total| {
-                    let global_done = base_uploaded + done;
-                    let pct = 40 + ((global_done as f64 / total as f64) * 50.0) as u8;
-                    let elapsed = t0.elapsed().as_secs_f64().max(0.001);
-                    let speed = (global_done as f64 / elapsed) as u64;
-                    emit_progress(&app2, &tid2, "upload", pct.min(92), global_done, total, "上传中", speed);
+                move |done, total| {
+                    let pct = 40 + ((done as f64 / total.max(1) as f64) * 50.0) as u8;
+                    let elapsed = upload_start.elapsed().as_secs_f64().max(0.001);
+                    let speed = (done as f64 / elapsed) as u64;
+                    emit_progress(&app2, &tid2, "upload", pct.min(92), done, total, "上传中", speed);
                 },
             ).await?;
-            uploaded_so_far += chunk_len;
-            chunks.push(ChunkMeta {
-                index,
-                name: chunk_name,
-                size: chunk.len() as u64,
-                sha256: sha256_hex(chunk),
-            });
         }
-    } else {
-        // 整体上传
-        let upload_start = Instant::now();
-        let app2 = app.clone();
-        let tid2 = task_id.clone();
-        client.put_bytes_with_progress(
-            &format!("{remote_prefix}/payload.bin"),
-            payload.clone(),
-            flag.clone(),
-            move |done, total| {
-                let pct = 40 + ((done as f64 / total.max(1) as f64) * 50.0) as u8;
-                let elapsed = upload_start.elapsed().as_secs_f64().max(0.001);
-                let speed = (done as f64 / elapsed) as u64;
-                emit_progress(&app2, &tid2, "upload", pct.min(92), done, total, "上传中", speed);
-            },
-        ).await?;
     }
 
-    // 5. 上传 manifest.json
+    // 5. 构建 manifest
+    let local_backup_dir = req.local_backup_dir.clone();
     let manifest = ManifestV1 {
         version: 1,
         backup_id,
@@ -319,13 +319,42 @@ pub async fn run_backup_task(
         profile_name: req.profile_name,
         is_tar: req.is_folder,
     };
-    emit_progress(&app, &task_id, "manifest", 95, 0, 0, "上传清单", 0);
     let manifest_json = serde_json::to_vec_pretty(&manifest)?;
-    info!("[backup:{}] uploading manifest ({} bytes): {}", task_id, manifest_json.len(), String::from_utf8_lossy(&manifest_json));
-    client.put_bytes(
-        &format!("{remote_prefix}/manifest.json"),
-        manifest_json,
-    ).await?;
+
+    // 上传 manifest 到 WebDAV
+    if req.upload_webdav {
+        emit_progress(&app, &task_id, "manifest", 93, 0, 0, "上传清单", 0);
+        let (webdav_cfg, webdav_password) = get_webdav_runtime_config(&state)?;
+        let client = WebDavClient::new(&webdav_cfg.base_url, &webdav_cfg.username, &webdav_password)?;
+        let remote_prefix = format!(
+            "{}/v1/{}/{}",
+            normalize_root(&webdav_cfg.remote_root), manifest.save_name, manifest.backup_id
+        );
+        client.put_bytes(&format!("{remote_prefix}/manifest.json"), manifest_json.clone()).await?;
+    }
+
+    // 6. 本地备份（将处理后的 payload + manifest 写入本地目录）
+    if !local_backup_dir.is_empty() {
+        emit_progress(&app, &task_id, "local_backup", 95, 0, 0, "本地备份", 0);
+        let base = PathBuf::from(&local_backup_dir)
+            .join("v1")
+            .join(&manifest.save_name)
+            .join(&manifest.backup_id);
+        fs::create_dir_all(&base)?;
+        fs::write(base.join("manifest.json"), &manifest_json)?;
+        if chunked {
+            let chunks_dir = base.join("chunks");
+            fs::create_dir_all(&chunks_dir)?;
+            for chunk_meta in &manifest.chunks {
+                let start = chunk_meta.index * CHUNK_SIZE_BYTES;
+                let end = (start + CHUNK_SIZE_BYTES).min(payload.len());
+                fs::write(chunks_dir.join(&chunk_meta.name), &payload[start..end])?;
+            }
+        } else {
+            fs::write(base.join("payload.bin"), &payload)?;
+        }
+        info!("[backup:{}] local backup written to {}", task_id, base.display());
+    }
 
     info!("[backup:{}] completed successfully", task_id);
     emit_progress(&app, &task_id, "done", 100, 0, 0, "备份完成", 0);
@@ -408,21 +437,41 @@ pub async fn run_restore_task(
         ).await?;
     }
 
-    // 3. 校验整体 payload SHA256
-    emit_progress(&app, &task_id, "verify_download", 62, 0, 0, "校验下载数据", 0);
+    // 3~6. 校验 → 解密 → 解压 → 写文件
+    restore_payload(
+        &app, &state, &task_id, payload, &manifest,
+        req.encryption_password.as_deref(), &req.target_dir, &req.conflict_policy,
+    ).await
+}
+
+// ── 公共恢复后半段 ──────────────────────────────────────────
+
+/// 校验 payload → 解密 → 解压 → 写文件（云端/本地恢复共用）
+async fn restore_payload(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    task_id: &str,
+    mut payload: Vec<u8>,
+    manifest: &ManifestV1,
+    encryption_password: Option<&str>,
+    target_dir: &str,
+    conflict_policy: &ConflictPolicy,
+) -> Result<()> {
+    // 校验整体 payload SHA256
+    emit_progress(app, task_id, "verify_download", 62, 0, 0, "校验数据", 0);
     if sha256_hex(&payload) != manifest.payload_sha256 {
-        emit_progress(&app, &task_id, "verify_download_fail", 62, 0, 0, "下载校验失败", 0);
+        emit_progress(app, task_id, "verify_download_fail", 62, 0, 0, "校验失败", 0);
         return Err(anyhow!("Payload checksum mismatch"));
     }
-    emit_progress(&app, &task_id, "verify_download_ok", 63, 0, 0, "下载校验通过", 0);
+    emit_progress(app, task_id, "verify_download_ok", 63, 0, 0, "校验通过", 0);
 
-    // 4. 解密（若加密）— 兼容旧整体加密和新分段加密
+    // 解密
     if manifest.encrypted {
-        let password = req.encryption_password.as_deref()
+        let password = encryption_password
             .ok_or_else(|| anyhow!("Encryption password is required"))?;
         let meta = manifest.encryption_meta.as_ref()
             .ok_or_else(|| anyhow!("Missing encryption metadata"))?;
-        emit_progress(&app, &task_id, "decrypt", 70, 0, 0, "解密中", 0);
+        emit_progress(app, task_id, "decrypt", 70, 0, 0, "解密中", 0);
         let decrypted = if meta.stream_encryption.unwrap_or(false) {
             decrypt_aes_gcm_stream(password, &payload, meta)?
         } else {
@@ -430,14 +479,12 @@ pub async fn run_restore_task(
         };
         drop(payload);
         payload = decrypted;
-    } else {
-        // 跳过解密，不发送 phase
     }
 
-    // 5. 流式 zstd 解压 + 增量 SHA256 校验（若未压缩则直接校验）
+    // 解压
     let restored;
     if manifest.compressed {
-        emit_progress(&app, &task_id, "decompress", 80, 0, 0, "解压中", 0);
+        emit_progress(app, task_id, "decompress", 80, 0, 0, "解压中", 0);
         let mut decoder = zstd::Decoder::new(std::io::Cursor::new(&payload))?;
         let mut buf_out = Vec::with_capacity(manifest.original_size as usize);
         let mut buf = [0u8; 64 * 1024];
@@ -449,45 +496,59 @@ pub async fn run_restore_task(
         drop(payload);
         restored = buf_out;
         let restored_sha = hex::encode(sha2::Sha256::digest(&restored));
-        info!("[restore:{}] decompressed to {} bytes", task_id, restored.len());
-        emit_progress(&app, &task_id, "verify_decompress", 88, 0, 0, "校验解压数据", 0);
+        emit_progress(app, task_id, "verify_decompress", 88, 0, 0, "校验解压数据", 0);
         if restored_sha != manifest.original_sha256 {
-            emit_progress(&app, &task_id, "verify_decompress_fail", 88, 0, 0, "解压校验失败", 0);
+            emit_progress(app, task_id, "verify_decompress_fail", 88, 0, 0, "解压校验失败", 0);
             return Err(anyhow!("Restored file checksum mismatch"));
         }
-        emit_progress(&app, &task_id, "verify_decompress_ok", 90, 0, 0, "解压校验通过", 0);
+        emit_progress(app, task_id, "verify_decompress_ok", 90, 0, 0, "解压校验通过", 0);
     } else {
-        // 跳过解压，不发送 phase
         restored = payload;
     }
 
-    // 6. 写入目标文件/目录
-    let target_root = PathBuf::from(&req.target_dir);
+    // 写入目标
+    let target_root = PathBuf::from(target_dir);
     fs::create_dir_all(&target_root)?;
 
     if manifest.is_tar {
-        // tar 解包到 target_dir/save_name/
         let unpack_dir = target_root.join(&manifest.source_relative_path);
+        // 同名文件夹冲突检测
+        if unpack_dir.exists() && unpack_dir.is_dir() {
+            let (tx, rx) = tokio::sync::oneshot::channel::<String>();
+            if let Ok(mut map) = state.conflict_channels.lock() {
+                map.insert(task_id.to_string(), tx);
+            }
+            let _ = app.emit("conflict_found", ConflictFound {
+                task_id: task_id.to_string(),
+                file_path: unpack_dir.to_string_lossy().to_string(),
+                is_folder: true,
+            });
+            let action = rx.await.map_err(|_| anyhow!("Conflict channel closed"))?;
+            match action.as_str() {
+                "delete" => { fs::remove_dir_all(&unpack_dir)?; }
+                _ => return Err(anyhow!("Restore cancelled by user")),
+            }
+        }
         fs::create_dir_all(&unpack_dir)?;
         let mut archive = tar::Archive::new(std::io::Cursor::new(&restored));
         archive.unpack(&unpack_dir)?;
-        info!("[restore:{}] unpacked tar to {}", task_id, unpack_dir.display());
-        emit_progress(&app, &task_id, "done", 100, 0, 0, &format!("已恢复到 {}", unpack_dir.display()), 0);
+        emit_progress(app, task_id, "done", 100, 0, 0, &format!("已恢复到 {}", unpack_dir.display()), 0);
     } else {
         let rel = sanitize_relative_path(&manifest.source_relative_path)?;
         let desired_path = target_root.join(&rel);
         let final_path = if desired_path.exists() {
-            match req.conflict_policy {
+            match conflict_policy {
                 ConflictPolicy::Overwrite => desired_path,
                 ConflictPolicy::Rename => rename_path(&desired_path, &target_root),
                 ConflictPolicy::Ask => {
                     let (tx, rx) = tokio::sync::oneshot::channel::<String>();
                     if let Ok(mut map) = state.conflict_channels.lock() {
-                        map.insert(task_id.clone(), tx);
+                        map.insert(task_id.to_string(), tx);
                     }
                     let _ = app.emit("conflict_found", ConflictFound {
-                        task_id: task_id.clone(),
+                        task_id: task_id.to_string(),
                         file_path: desired_path.to_string_lossy().to_string(),
+                        is_folder: false,
                     });
                     let action = rx.await.map_err(|_| anyhow!("Conflict channel closed"))?;
                     match action.as_str() {
@@ -504,8 +565,51 @@ pub async fn run_restore_task(
             fs::create_dir_all(parent)?;
         }
         fs::write(&final_path, &restored)?;
-        info!("[restore:{}] wrote {} bytes to {}", task_id, restored.len(), final_path.display());
-        emit_progress(&app, &task_id, "done", 100, 0, 0, &format!("已恢复到 {}", final_path.display()), 0);
+        emit_progress(app, task_id, "done", 100, 0, 0, &format!("已恢复到 {}", final_path.display()), 0);
     }
     Ok(())
+}
+
+// ── 本地恢复任务 ────────────────────────────────────────────
+
+/// 从本地备份目录恢复：读取本地 manifest + payload → 校验 → 解密 → 解压 → 写文件
+pub async fn run_local_restore_task(
+    app: AppHandle,
+    state: Arc<AppState>,
+    task_id: String,
+    req: LocalRestoreRequest,
+    backup_dir: PathBuf,
+    flag: Arc<AtomicBool>,
+) -> Result<()> {
+    info!("Local restore task {} started: dir={}", task_id, backup_dir.display());
+    should_cancel(&flag)?;
+
+    // 1. 读取本地 manifest
+    emit_progress(&app, &task_id, "manifest", 10, 0, 0, "读取本地清单", 0);
+    let manifest_data = fs::read_to_string(backup_dir.join("manifest.json"))?;
+    let manifest: ManifestV1 = serde_json::from_str(&manifest_data)?;
+
+    // 2. 读取本地 payload
+    emit_progress(&app, &task_id, "download", 20, 0, 0, "读取本地数据", 0);
+    let payload = if manifest.chunked {
+        let mut buf = Vec::new();
+        for chunk in &manifest.chunks {
+            should_cancel(&flag)?;
+            let data = fs::read(backup_dir.join("chunks").join(&chunk.name))?;
+            if sha256_hex(&data) != chunk.sha256 {
+                return Err(anyhow!("Chunk checksum mismatch: {}", chunk.name));
+            }
+            buf.extend_from_slice(&data);
+        }
+        buf
+    } else {
+        fs::read(backup_dir.join("payload.bin"))?
+    };
+    emit_progress(&app, &task_id, "download", 60, payload.len() as u64, payload.len() as u64, "本地数据读取完成", 0);
+
+    // 3~6. 校验 → 解密 → 解压 → 写文件
+    restore_payload(
+        &app, &state, &task_id, payload, &manifest,
+        req.encryption_password.as_deref(), &req.target_dir, &req.conflict_policy,
+    ).await
 }

@@ -16,13 +16,14 @@ use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Emitter, Manager, State};
 
-use config::{get_webdav_runtime_config, keyring_get, keyring_set, load_config, persist_config};
+use config::{get_webdav_runtime_config, keyring_get, keyring_set, load_config, persist_config, load_local_sync, persist_local_sync};
 use tasks::{
     detect_windows_save_candidates, fetch_manifest, generate_backup_id, normalize_root,
-    register_task, run_backup_task, run_restore_task, save_name_from_relative, unregister_task,
+    register_task, run_backup_task, run_restore_task, run_local_restore_task,
+    save_name_from_relative, unregister_task,
 };
 use types::{
-    AppState, BackupRequest, ConfigResp, LocalSaveFile,
+    AppState, BackupRequest, ConfigResp, LocalRestoreRequest, LocalSaveFile, LocalSyncEntry,
     RemoteBackupVersion, RestoreRequest, TaskDone, TestConnDetailResp, WebDavConfigInput,
 };
 use webdav::WebDavClient;
@@ -476,6 +477,46 @@ async fn delete_remote_backup(
     client.delete(&path).await.map_err(|e| e.to_string())
 }
 
+/// 列出所有本地备份版本（扫描 local_sync.json 中各目录）
+#[tauri::command]
+fn list_local_backups() -> Result<Vec<RemoteBackupVersion>, String> {
+    let sync = load_local_sync();
+    let mut out = Vec::new();
+    for (_profile, entry) in &sync.entries {
+        if !entry.local_backup_enabled || entry.local_backup_dir.is_empty() { continue; }
+        let v1_dir = PathBuf::from(&entry.local_backup_dir).join("v1");
+        let save_dirs = match fs::read_dir(&v1_dir) { Ok(d) => d, Err(_) => continue };
+        for sd in save_dirs {
+            let sd = match sd { Ok(e) => e, Err(_) => continue };
+            if !sd.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            let sn = sd.file_name().to_string_lossy().to_string();
+            let backup_dirs = match fs::read_dir(sd.path()) { Ok(d) => d, Err(_) => continue };
+            for bd in backup_dirs {
+                let bd = match bd { Ok(e) => e, Err(_) => continue };
+                if !bd.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+                let manifest_path = bd.path().join("manifest.json");
+                let data = match fs::read_to_string(&manifest_path) { Ok(d) => d, Err(_) => continue };
+                let m: types::ManifestV1 = match serde_json::from_str(&data) { Ok(m) => m, Err(_) => continue };
+                out.push(RemoteBackupVersion {
+                    save_name: sn.clone(),
+                    backup_id: m.backup_id,
+                    created_at: m.created_at,
+                    original_size: m.original_size,
+                    compressed_size: m.compressed_size,
+                    encrypted: m.encrypted,
+                    chunked: m.chunked,
+                    compressed: m.compressed,
+                    source_relative_path: m.source_relative_path,
+                    profile_name: m.profile_name,
+                    is_tar: m.is_tar,
+                });
+            }
+        }
+    }
+    out.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(out)
+}
+
 /// 异步启动恢复任务，立即返回 task_id
 #[tauri::command]
 async fn start_restore(app: AppHandle, state: State<'_, Arc<AppState>>, req: RestoreRequest) -> Result<String, String> {
@@ -488,6 +529,37 @@ async fn start_restore(app: AppHandle, state: State<'_, Arc<AppState>>, req: Res
         let sc = state_arc.clone();
         async move {
             let outcome = run_restore_task(app.clone(), sc.clone(), tid.clone(), req, flag).await;
+            let _ = app.emit("task_done", TaskDone {
+                task_id: tid.clone(),
+                success: outcome.is_ok(),
+                error: outcome.err().map(|e| e.to_string()),
+            });
+            unregister_task(&sc, &tid);
+        }
+    });
+    Ok(task_id)
+}
+
+/// 从本地备份目录恢复
+#[tauri::command]
+async fn start_local_restore(app: AppHandle, state: State<'_, Arc<AppState>>, req: LocalRestoreRequest) -> Result<String, String> {
+    // 从 local_sync 找到备份目录
+    let sync = load_local_sync();
+    let backup_dir = sync.entries.values()
+        .filter(|e| e.local_backup_enabled && !e.local_backup_dir.is_empty())
+        .map(|e| PathBuf::from(&e.local_backup_dir).join("v1").join(&req.save_name).join(&req.backup_id))
+        .find(|p| p.join("manifest.json").exists())
+        .ok_or_else(|| "本地备份目录未找到".to_string())?;
+
+    let task_id = format!("restore_{}", generate_backup_id());
+    let state_arc = state.inner().clone();
+    let flag = register_task(&state_arc, &task_id);
+    tauri::async_runtime::spawn({
+        let app = app.clone();
+        let tid = task_id.clone();
+        let sc = state_arc.clone();
+        async move {
+            let outcome = run_local_restore_task(app.clone(), sc.clone(), tid.clone(), req, backup_dir, flag).await;
             let _ = app.emit("task_done", TaskDone {
                 task_id: tid.clone(),
                 success: outcome.is_ok(),
@@ -536,6 +608,27 @@ fn set_compress_config(enabled: bool, level: i32, state: State<'_, Arc<AppState>
     cfg.compress_enabled = enabled;
     cfg.compress_level = level.clamp(1, 22);
     persist_config(&cfg).map_err(|e| e.to_string())
+}
+
+// ── 本地同步命令 ──────────────────────────────────────────────
+
+#[tauri::command]
+fn get_local_sync() -> HashMap<String, LocalSyncEntry> {
+    load_local_sync().entries
+}
+
+#[tauri::command]
+fn set_local_sync(profile_name: String, entry: LocalSyncEntry) -> Result<(), String> {
+    let mut cfg = load_local_sync();
+    cfg.entries.insert(profile_name, entry);
+    persist_local_sync(&cfg).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_local_sync(profile_name: String) -> Result<(), String> {
+    let mut cfg = load_local_sync();
+    cfg.entries.remove(&profile_name);
+    persist_local_sync(&cfg).map_err(|e| e.to_string())
 }
 
 /// 前端确认关闭：action = "minimize" | "quit"，remember = 是否记住
@@ -732,11 +825,16 @@ pub fn run() {
             list_remote_backups,
             delete_remote_backup,
             start_restore,
+            start_local_restore,
+            list_local_backups,
             cancel_task,
             resolve_conflict,
             set_close_action,
             set_compress_config,
             confirm_close,
+            get_local_sync,
+            set_local_sync,
+            delete_local_sync,
             // set_auto_watch,
             // start_file_watch,
             // stop_file_watch,

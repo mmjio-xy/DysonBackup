@@ -49,9 +49,16 @@ export type TaskDone = {
 export type ConflictFound = {
   taskId: string;
   filePath: string;
+  isFolder: boolean;
 };
 
 export type FileChanged = {
   path: string;
   kind: string;
+};
+
+export type LocalSyncEntry = {
+  uploadWebdav: boolean;
+  localBackupEnabled: boolean;
+  localBackupDir: string;
 };

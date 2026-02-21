@@ -11,6 +11,8 @@ const props = defineProps<{
   lastTaskId: string;
   encryptEnabled: boolean;
   compressEnabled: boolean;
+  uploadWebdav: boolean;
+  localBackupEnabled: boolean;
   saveProfiles: SaveProfile[];
   activeProfileName: string;
   searchQuery: string;
@@ -30,12 +32,13 @@ const profileOptions = computed(() =>
 );
 
 const BACKUP_PHASES = [
-  { key: "read",     label: "读取文件",  icon: "fas fa-file-alt" },
-  { key: "compress", label: "zstd 压缩", icon: "fas fa-compress-alt" },
-  { key: "encrypt",  label: "AES 加密",  icon: "fas fa-lock" },
-  { key: "upload",   label: "上传",      icon: "fas fa-cloud-upload-alt" },
-  { key: "manifest", label: "写清单",    icon: "fas fa-file-code" },
-  { key: "done",     label: "完成",      icon: "fas fa-check-circle" },
+  { key: "read",         label: "读取文件",  icon: "fas fa-file-alt" },
+  { key: "compress",     label: "zstd 压缩", icon: "fas fa-compress-alt" },
+  { key: "encrypt",      label: "AES 加密",  icon: "fas fa-lock" },
+  { key: "upload",       label: "上传",      icon: "fas fa-cloud-upload-alt" },
+  { key: "manifest",     label: "写清单",    icon: "fas fa-file-code" },
+  { key: "local_backup", label: "本地备份",  icon: "fas fa-hdd" },
+  { key: "done",         label: "完成",      icon: "fas fa-check-circle" },
 ];
 const PHASE_ORDER = BACKUP_PHASES.map(p => p.key);
 
@@ -46,6 +49,9 @@ type PhaseState = "done" | "active" | "stopped" | "pending" | "skipped";
 const SKIPPABLE: Record<string, () => boolean> = {
   compress: () => !props.compressEnabled,
   encrypt: () => !props.encryptEnabled,
+  upload: () => !props.uploadWebdav,
+  manifest: () => !props.uploadWebdav,
+  local_backup: () => !props.localBackupEnabled,
 };
 
 function phaseState(key: string): PhaseState {

@@ -16,17 +16,18 @@ import type { TabKey } from "./types";
 const activeTab = ref<TabKey>("overview");
 const { naiveTheme, isDark, toggle } = useTheme();
 const {
-  saveRoot, latestBackup, totalLocalSize, totalCloudSize, backups,
+  saveRoot, latestBackup, totalLocalSize, totalCloudSize, backups, localBackups,
   encryptedCount, chunkedCount, logs, taskStatus, lastTaskId,
   restoreTargetDir, encryptionPassword, decryptionPassword, useEncryptPwForRestore, conflictState,
   baseUrl, username, webdavPassword, webdavPasswordSet, remoteRoot, encryptByDefault,
   debugMode, setDebugMode, saveEncryptionSettings,
   closeAction, setCloseAction,
   compressEnabled, compressLevel, setCompressConfig,
+  localSyncMap, saveLocalSync,
   saveProfiles, activeProfileName, searchQuery, filteredFiles,
   restoreProfileFilter, restoreSearchQuery, filteredBackups,
   addProfile, updateProfile, deleteProfile,
-  scanSaves, startBackup, loadBackups, restore, cancelTask, deleteBackup,
+  scanSaves, startBackup, loadBackups, loadLocalBackups, restore, localRestore, cancelTask, deleteBackup,
   saveWebDavConfig, selectRestoreDir, resolveConflict,
   scanning, refreshingBackups,
 } = useAppState();
@@ -42,6 +43,7 @@ async function handleScan() {
 
 async function handleRefreshBackups() {
   const r = await loadBackups();
+  await loadLocalBackups();
   if (r.ok) message.success(`云端备份已刷新，共 ${backups.value.length} 条`);
   else message.error(`云端刷新失败: ${r.error}`);
 }
@@ -109,13 +111,16 @@ async function handleClose(action: "minimize" | "quit") {
         <BackupView v-else-if="activeTab === 'backup'"
           :files="filteredFiles" :logs="logs" :task-status="taskStatus" :last-task-id="lastTaskId"
           :encrypt-enabled="encryptByDefault" :compress-enabled="compressEnabled"
+          :upload-webdav="localSyncMap[activeProfileName]?.uploadWebdav ?? true"
+          :local-backup-enabled="localSyncMap[activeProfileName]?.localBackupEnabled ?? false"
           :save-profiles="saveProfiles" :active-profile-name="activeProfileName"
           :search-query="searchQuery" :scanning="scanning"
           @scan="handleScan" @backup="startBackup" @cancel="cancelTask"
           @update:active-profile-name="activeProfileName = $event; scanSaves()"
           @update:search-query="searchQuery = $event" />
         <RestoreView v-else-if="activeTab === 'restore'"
-          :backups="filteredBackups" :restore-target-dir="restoreTargetDir"
+          :backups="filteredBackups" :local-backups="localBackups"
+          :restore-target-dir="restoreTargetDir"
           :save-root="saveRoot"
           :encryption-password="encryptionPassword"
           :task-status="taskStatus" :last-task-id="lastTaskId"
@@ -127,6 +132,7 @@ async function handleClose(action: "minimize" | "quit") {
           @update:restore-profile-filter="restoreProfileFilter = $event"
           @update:restore-search-query="restoreSearchQuery = $event"
           @refresh="handleRefreshBackups" @restore="restore"
+          @local-restore="localRestore"
           :on-delete="deleteBackup" @reload="loadBackups"
           :on-select-dir="selectRestoreDir"
           :on-resolve-conflict="resolveConflict"
@@ -148,11 +154,13 @@ async function handleClose(action: "minimize" | "quit") {
           :close-action="closeAction"
           :compress-enabled="compressEnabled"
           :compress-level="compressLevel"
+          :local-sync-map="localSyncMap"
           @save-webdav="saveWebDavConfig"
           @save-encryption="saveEncryptionSettings"
           @add-profile="addProfile"
           @update-profile="updateProfile"
           @delete-profile="deleteProfile"
+          @save-local-sync="saveLocalSync"
           @update:debug-mode="setDebugMode"
           @update:close-action="setCloseAction"
           @update:compress-config="setCompressConfig" />

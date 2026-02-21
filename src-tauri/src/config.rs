@@ -4,7 +4,7 @@ use anyhow::{anyhow, Result};
 use std::fs;
 use std::path::PathBuf;
 
-use crate::types::{AppConfig, AppState, WebDavConfig};
+use crate::types::{AppConfig, AppState, LocalSyncConfig, WebDavConfig};
 
 const KEYRING_SERVICE: &str = "dysonbackup";
 
@@ -67,6 +67,30 @@ pub fn keyring_set(secret_ref: &str, value: &str) -> Result<()> {
 pub fn keyring_get(secret_ref: &str) -> Result<String> {
     let entry = keyring::Entry::new(KEYRING_SERVICE, secret_ref)?;
     Ok(entry.get_password()?)
+}
+
+// ── 本地同步配置 ──────────────────────────────────────────────
+
+fn local_sync_path() -> Result<PathBuf> {
+    let base = dirs::config_dir().ok_or_else(|| anyhow!("Cannot resolve config directory"))?;
+    Ok(base.join("dysonbackup").join("local_sync.json"))
+}
+
+pub fn load_local_sync() -> LocalSyncConfig {
+    local_sync_path()
+        .ok()
+        .and_then(|p| fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+pub fn persist_local_sync(cfg: &LocalSyncConfig) -> Result<()> {
+    let path = local_sync_path()?;
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(path, serde_json::to_vec_pretty(cfg)?)?;
+    Ok(())
 }
 
 // ── 运行时配置获取 ────────────────────────────────────────────

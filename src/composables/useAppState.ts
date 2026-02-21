@@ -2,7 +2,7 @@ import { computed, onMounted, ref } from "vue";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import type { ConflictFound, LocalSaveFile, RemoteBackup, SaveProfile, TaskDone, TaskProgress } from "../types";
+import type { ConflictFound, LocalSaveFile, LocalSyncEntry, RemoteBackup, SaveProfile, TaskDone, TaskProgress } from "../types";
 
 export function useAppState() {
   const saveRoot = ref("");
@@ -11,10 +11,16 @@ export function useAppState() {
 
   const files = ref<LocalSaveFile[]>([]);
   const backups = ref<RemoteBackup[]>([]);
+  const localBackups = ref<RemoteBackup[]>([]);
   const logs = ref<string[]>([]);
   const taskStatus = ref<Record<string, TaskProgress & { done?: boolean; failed?: boolean; cancelled?: boolean; error?: string }>>({});
   const lastTaskId = ref("");
   const cancelledTasks = new Set<string>();
+
+  function resetTaskProgress() {
+    taskStatus.value = {};
+    lastTaskId.value = "";
+  }
 
   // WebDAV settings
   const baseUrl = ref("");
@@ -51,6 +57,9 @@ export function useAppState() {
   const searchQuery = ref("");
   const restoreProfileFilter = ref("");
   const restoreSearchQuery = ref("");
+
+  // Local sync
+  const localSyncMap = ref<Record<string, LocalSyncEntry>>({});
 
   const scanning = ref(false);
   const refreshingBackups = ref(false);
@@ -106,6 +115,7 @@ export function useAppState() {
       input: { baseUrl: baseUrl.value, username: username.value, password: webdavPassword.value, remoteRoot: remoteRoot.value },
     });
     addLog("WebDAV 配置已保存");
+    resetTaskProgress();
   }
 
   async function testWebDav() {
@@ -119,6 +129,7 @@ export function useAppState() {
 
   async function startBackup(file: LocalSaveFile) {
     const profile = saveProfiles.value.find(p => p.name === activeProfileName.value);
+    const sync = localSyncMap.value[activeProfileName.value];
     const taskId = await invoke<string>("start_backup", {
       req: {
         localFilePath: file.localFilePath,
@@ -130,6 +141,8 @@ export function useAppState() {
         compressionLevel: compressLevel.value,
         profileName: activeProfileName.value || "戴森球计划",
         isFolder: profile?.saveMode === "folder",
+        uploadWebdav: sync?.uploadWebdav ?? true,
+        localBackupDir: (sync?.localBackupEnabled && sync?.localBackupDir) ? sync.localBackupDir : "",
       },
     });
     taskStatus.value[taskId] = { taskId, phase: "read", percent: 0, bytesDone: 0, bytesTotal: 0, message: "", speedBps: 0 };
@@ -158,6 +171,12 @@ export function useAppState() {
     }
   }
 
+  async function loadLocalBackups() {
+    try {
+      localBackups.value = await invoke<RemoteBackup[]>("list_local_backups");
+    } catch { localBackups.value = []; }
+  }
+
   async function deleteBackup(saveName: string, backupId: string) {
     await invoke("delete_remote_backup", { saveName, backupId });
     addLog(`已删除备份: ${saveName}/${backupId}`);
@@ -177,6 +196,7 @@ export function useAppState() {
     await invoke("set_compress_config", { enabled, level });
     compressEnabled.value = enabled;
     compressLevel.value = level;
+    resetTaskProgress();
   }
 
   // Profile CRUD
@@ -185,6 +205,7 @@ export function useAppState() {
     saveProfiles.value.push(input);
     activeProfileName.value = input.name;
     await scanSaves();
+    resetTaskProgress();
   }
 
   async function updateProfile(oldName: string, input: SaveProfile) {
@@ -192,16 +213,30 @@ export function useAppState() {
     const idx = saveProfiles.value.findIndex(p => p.name === oldName);
     if (idx >= 0) saveProfiles.value[idx] = input;
     if (activeProfileName.value === oldName) activeProfileName.value = input.name;
+    // 迁移同步配置 key
+    if (oldName !== input.name && localSyncMap.value[oldName]) {
+      localSyncMap.value[input.name] = localSyncMap.value[oldName];
+      delete localSyncMap.value[oldName];
+      try {
+        await invoke("delete_local_sync", { profileName: oldName });
+        await invoke("set_local_sync", { profileName: input.name, entry: localSyncMap.value[input.name] });
+      } catch { /* ignore */ }
+    }
     await scanSaves();
+    resetTaskProgress();
   }
 
   async function deleteProfile(name: string) {
     await invoke("delete_save_profile", { name });
     saveProfiles.value = saveProfiles.value.filter(p => p.name !== name);
+    // 清理同步配置
+    try { await invoke("delete_local_sync", { profileName: name }); } catch { /* ignore */ }
+    delete localSyncMap.value[name];
     if (activeProfileName.value === name) {
       activeProfileName.value = saveProfiles.value[0]?.name ?? "";
       await scanSaves();
     }
+    resetTaskProgress();
   }
 
   const filteredFiles = computed(() => {
@@ -222,12 +257,19 @@ export function useAppState() {
     return list;
   });
 
+  async function saveLocalSync(profileName: string, entry: LocalSyncEntry) {
+    await invoke("set_local_sync", { profileName, entry });
+    localSyncMap.value[profileName] = entry;
+    resetTaskProgress();
+  }
+
   async function saveEncryptionSettings() {
     await invoke("save_encryption_settings", {
       encryptByDefault: encryptByDefault.value,
       password: encryptionPassword.value || null,
     });
     addLog("加密设置已保存");
+    resetTaskProgress();
   }
 
   async function restore(backup: RemoteBackup, targetDir: string, password: string | null) {
@@ -247,6 +289,26 @@ export function useAppState() {
       return taskId;
     } catch (e) {
       addLog(`恢复失败: ${e}`);
+    }
+  }
+
+  async function localRestore(backup: RemoteBackup, targetDir: string, password: string | null) {
+    try {
+      const taskId = await invoke<string>("start_local_restore", {
+        req: {
+          saveName: backup.saveName,
+          backupId: backup.backupId,
+          targetDir,
+          conflictPolicy: "ask",
+          encryptionPassword: password,
+        },
+      });
+      taskStatus.value[taskId] = { taskId, phase: "manifest", percent: 0, bytesDone: 0, bytesTotal: 0, message: "", speedBps: 0 };
+      lastTaskId.value = taskId;
+      addLog(`开始本地恢复: ${backup.backupId}`);
+      return taskId;
+    } catch (e) {
+      addLog(`本地恢复失败: ${e}`);
     }
   }
 
@@ -304,6 +366,8 @@ export function useAppState() {
     if (saveProfiles.value.length > 0) {
       activeProfileName.value = saveProfiles.value[0].name;
     }
+    // 加载本地同步配置
+    try { localSyncMap.value = await invoke<Record<string, LocalSyncEntry>>("get_local_sync"); } catch { /* ignore */ }
     if (cfg.encryptionPasswordSet) {
       try {
         encryptionPassword.value = await invoke<string>("get_encryption_password");
@@ -335,10 +399,11 @@ export function useAppState() {
     // });
     await scanSaves();
     await loadBackups();
+    await loadLocalBackups();
   });
 
   return {
-    saveRoot, saveMode, saveExtension, files, backups, logs, taskStatus, lastTaskId, lastTask,
+    saveRoot, saveMode, saveExtension, files, backups, localBackups, logs, taskStatus, lastTaskId, lastTask,
     scanning, refreshingBackups,
     baseUrl, username, webdavPassword, webdavPasswordSet, remoteRoot,
     encryptByDefault, encryptionPassword,
@@ -347,10 +412,11 @@ export function useAppState() {
     debugMode, setDebugMode, saveEncryptionSettings,
     closeAction, setCloseAction,
     compressEnabled, compressLevel, setCompressConfig,
+    localSyncMap, saveLocalSync,
     saveProfiles, activeProfileName, searchQuery, filteredFiles,
     restoreProfileFilter, restoreSearchQuery, filteredBackups,
     addProfile, updateProfile, deleteProfile,
-    savePath, saveSaveSettings, scanSaves, saveWebDavConfig, testWebDav, startBackup, loadBackups,
-    restore, cancelTask, deleteBackup, selectRestoreDir, resolveConflict,
+    savePath, saveSaveSettings, scanSaves, saveWebDavConfig, testWebDav, startBackup, loadBackups, loadLocalBackups,
+    restore, localRestore, cancelTask, deleteBackup, selectRestoreDir, resolveConflict,
   };
 }

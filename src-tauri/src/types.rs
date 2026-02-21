@@ -8,6 +8,27 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
+// ── 本地同步配置（独立 JSON 文件）─────────────────────────────
+
+/// 本地同步配置，存储在 local_sync.json
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct LocalSyncConfig {
+    pub entries: HashMap<String, LocalSyncEntry>,
+}
+
+/// 单条本地备份配置
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSyncEntry {
+    /// 是否上传到 WebDAV
+    #[serde(default = "default_true")]
+    pub upload_webdav: bool,
+    /// 是否启用本地备份
+    pub local_backup_enabled: bool,
+    /// 本地备份目录
+    pub local_backup_dir: String,
+}
+
 // ── 持久化配置 ────────────────────────────────────────────────
 
 /// 应用主配置，序列化到 config.json
@@ -164,6 +185,12 @@ pub struct BackupRequest {
     pub profile_name: String,
     #[serde(default)]
     pub is_folder: bool,
+    /// 是否上传到 WebDAV
+    #[serde(default = "default_true")]
+    pub upload_webdav: bool,
+    /// 本地备份目录（空字符串表示不启用）
+    #[serde(default)]
+    pub local_backup_dir: String,
 }
 
 /// 文件冲突处理策略
@@ -178,6 +205,17 @@ pub enum ConflictPolicy {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RestoreRequest {
+    pub save_name: String,
+    pub backup_id: String,
+    pub target_dir: String,
+    pub conflict_policy: ConflictPolicy,
+    pub encryption_password: Option<String>,
+}
+
+/// 本地恢复请求（从本地备份目录读取）
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalRestoreRequest {
     pub save_name: String,
     pub backup_id: String,
     pub target_dir: String,
@@ -209,6 +247,9 @@ pub struct RemoteBackupVersion {
 pub struct ConflictFound {
     pub task_id: String,
     pub file_path: String,
+    /// 冲突目标是否为文件夹
+    #[serde(default)]
+    pub is_folder: bool,
 }
 
 // ── 任务进度事件 ──────────────────────────────────────────────

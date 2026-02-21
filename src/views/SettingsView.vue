@@ -6,7 +6,7 @@ import {
 } from "naive-ui";
 import {invoke} from "@tauri-apps/api/core";
 import {open} from "@tauri-apps/plugin-dialog";
-import type {SaveProfile} from "../types";
+import type {SaveProfile, LocalSyncEntry} from "../types";
 
 const activeTab = ref("general");
 const logSize = ref(0);
@@ -28,7 +28,7 @@ async function confirmClearLogs() {
 }
 onMounted(refreshLogSize);
 
-defineProps<{
+const props = defineProps<{
   baseUrl: string;
   username: string;
   webdavPassword: string;
@@ -43,6 +43,7 @@ defineProps<{
   closeAction: string;
   compressEnabled: boolean;
   compressLevel: number;
+  localSyncMap: Record<string, LocalSyncEntry>;
 }>();
 
 const emit = defineEmits<{
@@ -62,34 +63,62 @@ const emit = defineEmits<{
   addProfile: [profile: SaveProfile];
   updateProfile: [oldName: string, profile: SaveProfile];
   deleteProfile: [name: string];
+  saveLocalSync: [profileName: string, entry: LocalSyncEntry];
 }>();
 
 // Profile modal
 const showProfileModal = ref(false);
 const editingProfileName = ref<string | null>(null); // null = 新增
 const profileForm = ref<SaveProfile>({ name: "", saveRoot: "", saveMode: "file", saveExtension: "" });
+const uploadWebdav = ref(true);
+const localBackupEnabled = ref(false);
+const localBackupDir = ref("");
+const saveError = ref("");
 
 function openAddProfile() {
   editingProfileName.value = null;
   profileForm.value = { name: "", saveRoot: "", saveMode: "file", saveExtension: "" };
+  uploadWebdav.value = true;
+  localBackupEnabled.value = false;
+  localBackupDir.value = "";
+  saveError.value = "";
   showProfileModal.value = true;
 }
 function openEditProfile(p: SaveProfile) {
   editingProfileName.value = p.name;
   profileForm.value = { ...p };
+  const sync = props.localSyncMap[p.name];
+  uploadWebdav.value = sync?.uploadWebdav ?? true;
+  localBackupEnabled.value = sync?.localBackupEnabled ?? false;
+  localBackupDir.value = sync?.localBackupDir ?? "";
+  saveError.value = "";
   showProfileModal.value = true;
 }
 async function pickProfileDir() {
   const dir = await open({ directory: true, multiple: false, title: "选择存档目录" });
   if (dir) profileForm.value.saveRoot = dir as string;
 }
+async function pickSyncDir() {
+  const dir = await open({ directory: true, multiple: false, title: "选择本地备份目录" });
+  if (dir) localBackupDir.value = dir as string;
+}
 function saveProfile() {
   if (!profileForm.value.name.trim() || !profileForm.value.saveRoot.trim()) return;
+  if (!uploadWebdav.value && !localBackupEnabled.value) {
+    saveError.value = "请至少开启一种备份方式";
+    return;
+  }
+  saveError.value = "";
   if (editingProfileName.value != null) {
     emit("updateProfile", editingProfileName.value, { ...profileForm.value });
   } else {
     emit("addProfile", { ...profileForm.value });
   }
+  emit("saveLocalSync", profileForm.value.name, {
+    uploadWebdav: uploadWebdav.value,
+    localBackupEnabled: localBackupEnabled.value,
+    localBackupDir: localBackupDir.value,
+  });
   showProfileModal.value = false;
 }
 
@@ -160,7 +189,7 @@ async function runTest() {
         </n-tab-pane>
 
         <!-- 存档设置 Tab -->
-        <n-tab-pane name="save" tab="存档配置">
+        <n-tab-pane name="save" tab="备份设置">
           <div class="tab-content">
             <div class="profile-list">
               <div v-for="p in saveProfiles" :key="p.name" class="profile-card">
@@ -185,7 +214,7 @@ async function runTest() {
         </n-tab-pane>
 
         <!-- WebDAV Tab -->
-        <n-tab-pane name="webdav" tab="WebDAV 连接">
+        <n-tab-pane name="webdav" tab="WebDAV 设置">
           <div class="tab-content">
             <n-form-item label="服务器地址">
               <n-input :value="baseUrl" placeholder="https://dav.example.com"
@@ -246,7 +275,7 @@ async function runTest() {
         </n-tab-pane>
 
         <!-- 调试 Tab -->
-        <n-tab-pane name="debug" tab="调试">
+        <n-tab-pane name="debug" tab="调试设置">
           <div class="tab-content">
             <div class="setting-row">
               <span class="setting-label">调试模式</span>
@@ -333,10 +362,22 @@ async function runTest() {
         <n-select v-model:value="profileForm.saveMode" style="width:200px"
           :options="[{ label: '单文件', value: 'file' }, { label: '文件夹', value: 'folder' }]" />
       </n-form-item>
-      <n-form-item label="存档扩展名">
-        <n-input v-model:value="profileForm.saveExtension" placeholder=".dsv" style="width:200px"
-          :disabled="profileForm.saveMode === 'folder'" />
+      <n-form-item v-if="profileForm.saveMode === 'file'" label="存档扩展名">
+        <n-input v-model:value="profileForm.saveExtension" placeholder=".dsv" style="width:200px" />
       </n-form-item>
+      <n-form-item label="备份到 WebDAV">
+        <n-switch v-model:value="uploadWebdav" />
+      </n-form-item>
+      <n-form-item label="本地备份">
+        <n-switch v-model:value="localBackupEnabled" />
+      </n-form-item>
+      <n-form-item v-if="localBackupEnabled" label="本地备份目录">
+        <n-input-group>
+          <n-input v-model:value="localBackupDir" placeholder="选择本地备份目录" style="margin-right:10px" />
+          <n-button @click="pickSyncDir"><i class="fas fa-folder-open"></i></n-button>
+        </n-input-group>
+      </n-form-item>
+      <div v-if="saveError" style="color:#d03050;font-size:12px;margin-bottom:8px">{{ saveError }}</div>
       <div class="row-btn" style="justify-content:flex-end">
         <n-button @click="showProfileModal = false">取消</n-button>
         <n-button type="primary" @click="saveProfile"><i class="fas fa-save" style="margin-right:4px"></i>保存</n-button>
