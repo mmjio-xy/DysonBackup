@@ -412,7 +412,8 @@ async fn list_remote_backups(
     let save_names = if let Some(sn) = save_name {
         vec![sn]
     } else {
-        client.list_child_dirs(&format!("{root}/v1")).await.unwrap_or_default()
+        client.list_child_dirs(&format!("{root}/v1")).await
+            .map_err(|e| e.to_string())?
     };
     log::info!("[list_remote_backups] save_names={:?}", save_names);
 
