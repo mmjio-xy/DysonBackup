@@ -14,6 +14,7 @@ const props = defineProps<{
   saveProfiles: SaveProfile[];
   activeProfileName: string;
   searchQuery: string;
+  scanning: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -98,8 +99,8 @@ const isTerminal = computed(() =>
             @update:value="emit('update:activeProfileName', $event)" />
           <n-input size="small" placeholder="搜索..." style="width:140px" clearable
             :value="searchQuery" @update:value="emit('update:searchQuery', $event)" />
-          <n-button text size="small" @click="emit('scan')">
-            <i class="fas fa-sync-alt" style="margin-right:4px"></i>刷新
+          <n-button text size="small" :disabled="scanning" @click="emit('scan')">
+            <i class="fas fa-sync-alt" :class="{ 'fa-spin': scanning }" style="margin-right:4px"></i>刷新
           </n-button>
         </div>
       </template>

@@ -52,9 +52,24 @@ export function useAppState() {
   const restoreProfileFilter = ref("");
   const restoreSearchQuery = ref("");
 
+  const scanning = ref(false);
+  const refreshingBackups = ref(false);
+
   function addLog(line: string) {
     const t = new Date().toTimeString().slice(0, 8);
     logs.value = [`${t} ${line}`, ...logs.value].slice(0, 200);
+  }
+
+  function classifyError(e: unknown): string {
+    const msg = String(e);
+    if (/401/.test(msg)) return "认证失败：用户名或密码错误 (401)";
+    if (/403/.test(msg)) return "无权访问 (403)";
+    if (/404/.test(msg)) return "远端目录不存在 (404)";
+    if (/timeout|timed?\s*out|ETIMEDOUT/i.test(msg)) return "连接超时";
+    if (/connect|ECONNREFUSED|ENOTFOUND|dns/i.test(msg)) return "连接失败：无法连接服务器";
+    const m = msg.match(/\b(4\d{2}|5\d{2})\b/);
+    if (m) return `请求错误 (HTTP ${m[1]})`;
+    return msg;
   }
 
   async function savePath() {
@@ -69,11 +84,21 @@ export function useAppState() {
     });
   }
 
-  async function scanSaves() {
-    const args: Record<string, unknown> = {};
-    if (activeProfileName.value) args.profileName = activeProfileName.value;
-    files.value = await invoke<LocalSaveFile[]>("scan_saves", args);
-    addLog(`扫描完成，共 ${files.value.length} 个文件`);
+  async function scanSaves(): Promise<{ ok: boolean; error?: string }> {
+    scanning.value = true;
+    try {
+      const args: Record<string, unknown> = {};
+      if (activeProfileName.value) args.profileName = activeProfileName.value;
+      files.value = await invoke<LocalSaveFile[]>("scan_saves", args);
+      addLog(`扫描完成，共 ${files.value.length} 个文件`);
+      return { ok: true };
+    } catch (e) {
+      const msg = classifyError(e);
+      addLog(`扫描失败: ${msg}`);
+      return { ok: false, error: msg };
+    } finally {
+      scanning.value = false;
+    }
   }
 
   async function saveWebDavConfig() {
@@ -118,12 +143,18 @@ export function useAppState() {
     await invoke("cancel_task", { taskId });
   }
 
-  async function loadBackups() {
+  async function loadBackups(): Promise<{ ok: boolean; error?: string }> {
+    refreshingBackups.value = true;
     try {
       backups.value = await invoke<RemoteBackup[]>("list_remote_backups");
       addLog(`云端备份列表已刷新，共 ${backups.value.length} 条`);
-    } catch {
-      // WebDAV 未配置时静默跳过
+      return { ok: true };
+    } catch (e) {
+      const msg = classifyError(e);
+      addLog(`云端刷新失败: ${msg}`);
+      return { ok: false, error: msg };
+    } finally {
+      refreshingBackups.value = false;
     }
   }
 
@@ -308,6 +339,7 @@ export function useAppState() {
 
   return {
     saveRoot, saveMode, saveExtension, files, backups, logs, taskStatus, lastTaskId, lastTask,
+    scanning, refreshingBackups,
     baseUrl, username, webdavPassword, webdavPasswordSet, remoteRoot,
     encryptByDefault, encryptionPassword,
     restoreTargetDir, decryptionPassword, useEncryptPwForRestore, conflictState,

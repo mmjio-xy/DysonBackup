@@ -23,6 +23,7 @@ defineProps<{
           <div class="stat-value">{{ latestBackup ? latestBackup.createdAt.slice(0, 16).replace("T", " ") : "暂无" }}</div>
           <div class="stat-sub">
             <n-tag v-if="latestBackup" type="success" size="small" round>成功</n-tag>
+            <n-tag v-if="latestBackup?.profileName" type="info" size="small" round>{{ latestBackup.profileName }}</n-tag>
             <span class="sub-text">{{ latestBackup ? latestBackup.saveName : "尚未备份" }}</span>
           </div>
           <n-progress type="line" :percentage="latestBackup ? 100 : 0" :show-indicator="false" style="margin-top:14px" />

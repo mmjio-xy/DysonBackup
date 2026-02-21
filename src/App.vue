@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, onMounted } from "vue";
-import { NConfigProvider, NButton, NScrollbar, NModal, NCheckbox } from "naive-ui";
+import { ref, onMounted, computed } from "vue";
+import { NConfigProvider, NButton, NScrollbar, NModal, NCheckbox, createDiscreteApi } from "naive-ui";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getVersion } from "@tauri-apps/api/app";
 import { listen } from "@tauri-apps/api/event";
@@ -28,7 +28,23 @@ const {
   addProfile, updateProfile, deleteProfile,
   scanSaves, startBackup, loadBackups, restore, cancelTask, deleteBackup,
   saveWebDavConfig, selectRestoreDir, resolveConflict,
+  scanning, refreshingBackups,
 } = useAppState();
+
+const configProviderRef = computed(() => ({ theme: naiveTheme.value }));
+const { message } = createDiscreteApi(["message"], { configProviderProps: configProviderRef });
+
+async function handleScan() {
+  const r = await scanSaves();
+  if (r.ok) message.success(`扫描完成，共 ${filteredFiles.value.length} 个文件`);
+  else message.error(`扫描失败: ${r.error}`);
+}
+
+async function handleRefreshBackups() {
+  const r = await loadBackups();
+  if (r.ok) message.success(`云端备份已刷新，共 ${backups.value.length} 条`);
+  else message.error(`云端刷新失败: ${r.error}`);
+}
 
 const tabs: { key: TabKey; label: string; icon: string }[] = [
   { key: "overview", label: "概况", icon: "fas fa-chart-pie" },
@@ -94,8 +110,8 @@ async function handleClose(action: "minimize" | "quit") {
           :files="filteredFiles" :logs="logs" :task-status="taskStatus" :last-task-id="lastTaskId"
           :encrypt-enabled="encryptByDefault" :compress-enabled="compressEnabled"
           :save-profiles="saveProfiles" :active-profile-name="activeProfileName"
-          :search-query="searchQuery"
-          @scan="scanSaves" @backup="startBackup" @cancel="cancelTask"
+          :search-query="searchQuery" :scanning="scanning"
+          @scan="handleScan" @backup="startBackup" @cancel="cancelTask"
           @update:active-profile-name="activeProfileName = $event; scanSaves()"
           @update:search-query="searchQuery = $event" />
         <RestoreView v-else-if="activeTab === 'restore'"
@@ -107,9 +123,10 @@ async function handleClose(action: "minimize" | "quit") {
           :save-profiles="saveProfiles"
           :restore-profile-filter="restoreProfileFilter"
           :restore-search-query="restoreSearchQuery"
+          :refreshing="refreshingBackups"
           @update:restore-profile-filter="restoreProfileFilter = $event"
           @update:restore-search-query="restoreSearchQuery = $event"
-          @refresh="loadBackups" @restore="restore"
+          @refresh="handleRefreshBackups" @restore="restore"
           :on-delete="deleteBackup" @reload="loadBackups"
           :on-select-dir="selectRestoreDir"
           :on-resolve-conflict="resolveConflict"
@@ -152,7 +169,7 @@ async function handleClose(action: "minimize" | "quit") {
       </div>
       <div style="display:flex;gap:10px;justify-content:flex-end">
         <n-button @click="handleClose('minimize')">最小化到托盘</n-button>
-        <n-button type="error" @click="handleClose('quit')"><i class="fas fa-power-off" style="margin-right:4px"></i>退出程序</n-button>
+        <n-button type="error" @click="handleClose('quit')">退出程序</n-button>
         <n-button @click="showCloseDialog = false">取消</n-button>
       </div>
     </n-modal>

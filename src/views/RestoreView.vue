@@ -18,6 +18,7 @@ const props = defineProps<{
   saveProfiles: { name: string; saveRoot: string }[];
   restoreProfileFilter: string;
   restoreSearchQuery: string;
+  refreshing: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -135,8 +136,30 @@ function doRestore(pw: string | null) {
 }
 
 // ── 批量恢复 ──
+const isMultiProfile = computed(() => {
+  const names = new Set(groupedBackups.value.filter(g => selected.value.has(g.saveName)).map(g => currentBackup(g).profileName));
+  return names.size > 1;
+});
+const showBatchProfileDialog = ref(false);
+
 function batchRestore() {
-  for (const b of selectedBackups.value) requestRestore(b);
+  if (isMultiProfile.value) {
+    showBatchProfileDialog.value = true;
+  } else {
+    for (const b of selectedBackups.value) requestRestore(b);
+  }
+}
+
+function batchRestoreToOwnDirs() {
+  showBatchProfileDialog.value = false;
+  for (const b of selectedBackups.value) {
+    const p = props.saveProfiles.find(sp => sp.name === b.profileName);
+    const dir = p?.saveRoot || props.saveRoot;
+    if (!dir) continue;
+    pendingBackup.value = b;
+    resolvedDir.value = dir;
+    checkPassword();
+  }
 }
 
 // ── 进度条 ──
@@ -298,14 +321,14 @@ function chunkCount(b: RemoteBackup) {
           @update:value="emit('update:restoreProfileFilter', $event)" />
         <n-input size="small" placeholder="搜索..." style="width:140px" clearable
           :value="restoreSearchQuery" @update:value="emit('update:restoreSearchQuery', $event)" />
-        <n-button text size="small" @click="emit('refresh')">
-          <i class="fas fa-rotate-right" style="margin-right:4px"></i>刷新列表
+        <n-button text size="small" :disabled="refreshing" @click="emit('refresh')">
+          <i class="fas fa-rotate-right" :class="{ 'fa-spin': refreshing }" style="margin-right:4px"></i>刷新列表
         </n-button>
       </div>
     </template>
 
     <div class="restore-opts">
-      <n-button @click="props.onSelectDir()">
+      <n-button :disabled="isMultiProfile" @click="props.onSelectDir()">
         <i class="fas fa-folder-open" style="margin-right:4px"></i>选择恢复目录
       </n-button>
       <span v-if="restoreTargetDir" class="selected-dir">{{ restoreTargetDir }}</span>
@@ -490,6 +513,15 @@ function chunkCount(b: RemoteBackup) {
       <n-button v-if="encryptionPassword" @click="onPwUseEncrypt">使用加密密码</n-button>
       <n-button type="primary" :disabled="!inlinePw" @click="onPwUseInline">确认</n-button>
       <n-button type="error" ghost @click="onPwCancel">取消</n-button>
+    </div>
+  </n-modal>
+
+  <!-- 跨配置批量恢复确认弹窗 -->
+  <n-modal v-model:show="showBatchProfileDialog" preset="card" title="批量恢复确认" style="width:440px">
+    <p>选中的备份来自不同配置，将恢复到各自配置对应的存档目录。</p>
+    <div class="del-actions">
+      <n-button type="primary" @click="batchRestoreToOwnDirs">恢复到各自备份目录</n-button>
+      <n-button @click="showBatchProfileDialog = false">取消</n-button>
     </div>
   </n-modal>
   </div>
