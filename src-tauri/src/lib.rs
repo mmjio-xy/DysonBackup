@@ -22,7 +22,7 @@ use tasks::{
     register_task, run_backup_task, run_restore_task, save_name_from_relative, unregister_task,
 };
 use types::{
-    AppState, BackupRequest, ConfigResp, DetectPathsResp, LocalSaveFile,
+    AppState, BackupRequest, ConfigResp, LocalSaveFile,
     RemoteBackupVersion, RestoreRequest, TaskDone, TestConnDetailResp, WebDavConfigInput,
 };
 use webdav::WebDavClient;
@@ -48,19 +48,6 @@ fn get_config(state: State<'_, Arc<AppState>>) -> Result<ConfigResp, String> {
         compress_level: cfg.compress_level,
         // auto_watch: cfg.auto_watch,
     })
-}
-
-/// 探测系统中戴森球计划的存档目录候选路径
-#[tauri::command]
-fn detect_save_paths() -> Result<DetectPathsResp, String> {
-    let mut candidates: Vec<String> = detect_windows_save_candidates()
-        .into_iter()
-        .filter(|p| p.exists() && p.is_dir())
-        .map(|p| p.to_string_lossy().to_string())
-        .collect();
-    candidates.sort();
-    candidates.dedup();
-    Ok(DetectPathsResp { candidates })
 }
 
 /// 切换调试模式，持久化并动态调整日志级别
@@ -613,7 +600,6 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_config,
-            detect_save_paths,
             set_debug_mode,
             open_devtools,
             open_log_dir,

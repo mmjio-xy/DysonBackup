@@ -62,12 +62,6 @@ pub struct AppState {
 
 // ── Tauri 命令 I/O 类型 ───────────────────────────────────────
 
-#[derive(Debug, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DetectPathsResp {
-    pub candidates: Vec<String>,
-}
-
 /// 本地存档文件信息（sha256 在备份时才计算，扫描时为空）
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]

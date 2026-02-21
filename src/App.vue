@@ -24,7 +24,7 @@ const {
   closeAction, setCloseAction,
   compressEnabled, compressLevel, setCompressConfig,
   scanSaves, startBackup, loadBackups, restore, cancelTask, deleteBackup,
-  saveWebDavConfig, detectPaths, savePath, selectRestoreDir, resolveConflict,
+  saveWebDavConfig, savePath, selectRestoreDir, resolveConflict,
 } = useAppState();
 
 const tabs: { key: TabKey; label: string; icon: string }[] = [
@@ -120,7 +120,7 @@ async function handleClose(action: "minimize" | "quit") {
           :compress-level="compressLevel"
           @save-webdav="saveWebDavConfig"
           @save-encryption="saveEncryptionSettings"
-          @detect-paths="detectPaths" @save-path="savePath"
+          @save-path="savePath"
           @update:debug-mode="setDebugMode"
           @update:close-action="setCloseAction"
           @update:compress-config="setCompressConfig" />

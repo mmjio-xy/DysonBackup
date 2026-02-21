@@ -6,7 +6,7 @@ import type { ConflictFound, LocalSaveFile, RemoteBackup, TaskDone, TaskProgress
 
 export function useAppState() {
   const saveRoot = ref("");
-  const detectedPaths = ref<string[]>([]);
+
   const files = ref<LocalSaveFile[]>([]);
   const backups = ref<RemoteBackup[]>([]);
   const logs = ref<string[]>([]);
@@ -46,12 +46,6 @@ export function useAppState() {
   function addLog(line: string) {
     const t = new Date().toTimeString().slice(0, 8);
     logs.value = [`${t} ${line}`, ...logs.value].slice(0, 200);
-  }
-
-  async function detectPaths() {
-    const r = await invoke<{ candidates: string[] }>("detect_save_paths");
-    detectedPaths.value = r.candidates;
-    if (!saveRoot.value && r.candidates.length > 0) saveRoot.value = r.candidates[0];
   }
 
   async function savePath() {
@@ -212,7 +206,6 @@ export function useAppState() {
       } catch { /* keyring 读取失败则忽略 */ }
     }
 
-    await detectPaths();
     await listen<TaskProgress>("task_progress", (e) => {
       const p = e.payload;
       taskStatus.value[p.taskId] = { ...p };
@@ -241,7 +234,7 @@ export function useAppState() {
   });
 
   return {
-    saveRoot, detectedPaths, files, backups, logs, taskStatus, lastTaskId, lastTask,
+    saveRoot, files, backups, logs, taskStatus, lastTaskId, lastTask,
     baseUrl, username, webdavPassword, webdavPasswordSet, remoteRoot,
     encryptByDefault, encryptionPassword,
     restoreTargetDir, decryptionPassword, useEncryptPwForRestore, conflictState,
@@ -249,7 +242,7 @@ export function useAppState() {
     debugMode, setDebugMode, saveEncryptionSettings,
     closeAction, setCloseAction,
     compressEnabled, compressLevel, setCompressConfig,
-    detectPaths, savePath, scanSaves, saveWebDavConfig, testWebDav, startBackup, loadBackups,
+    savePath, scanSaves, saveWebDavConfig, testWebDav, startBackup, loadBackups,
     restore, cancelTask, deleteBackup, selectRestoreDir, resolveConflict,
   };
 }
