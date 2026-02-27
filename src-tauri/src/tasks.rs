@@ -147,6 +147,114 @@ pub fn detect_windows_save_candidates() -> Vec<PathBuf> {
     paths
 }
 
+/// 读取本地某存档的最新 manifest（按 backup_id 目录名倒序尝试）
+fn find_latest_local_manifest(local_backup_dir: &str, save_name: &str) -> Option<ManifestV1> {
+    if local_backup_dir.trim().is_empty() {
+        return None;
+    }
+
+    let save_dir = PathBuf::from(local_backup_dir).join("v1").join(save_name);
+    let mut backup_ids: Vec<String> = fs::read_dir(save_dir)
+        .ok()?
+        .filter_map(|entry| {
+            let entry = entry.ok()?;
+            if !entry.file_type().ok()?.is_dir() {
+                return None;
+            }
+            Some(entry.file_name().to_string_lossy().to_string())
+        })
+        .collect();
+
+    backup_ids.sort_by(|a, b| b.cmp(a));
+
+    for bid in backup_ids {
+        let manifest_path = PathBuf::from(local_backup_dir)
+            .join("v1")
+            .join(save_name)
+            .join(&bid)
+            .join("manifest.json");
+        if let Ok(data) = fs::read_to_string(&manifest_path) {
+            if let Ok(m) = serde_json::from_str::<ManifestV1>(&data) {
+                return Some(m);
+            }
+        }
+    }
+
+    None
+}
+
+/// 读取云端某存档的最新 manifest（按 backup_id 目录名倒序尝试）
+async fn find_latest_remote_manifest(state: &Arc<AppState>, save_name: &str) -> Option<ManifestV1> {
+    let (webdav_cfg, webdav_password) = match get_webdav_runtime_config(state) {
+        Ok(v) => v,
+        Err(e) => {
+            debug!("skip remote latest manifest lookup: {}", e);
+            return None;
+        }
+    };
+
+    let client = match WebDavClient::new(&webdav_cfg.base_url, &webdav_cfg.username, &webdav_password) {
+        Ok(v) => v,
+        Err(e) => {
+            debug!("skip remote latest manifest lookup: {}", e);
+            return None;
+        }
+    };
+
+    let root = normalize_root(&webdav_cfg.remote_root);
+    let mut backup_ids = match client.list_child_dirs(&format!("{root}/v1/{save_name}")).await {
+        Ok(v) => v,
+        Err(e) => {
+            debug!("skip remote latest manifest lookup: {}", e);
+            return None;
+        }
+    };
+
+    backup_ids.sort_by(|a, b| b.cmp(a));
+
+    for bid in backup_ids {
+        if let Ok(m) = fetch_manifest(&client, &webdav_cfg.remote_root, save_name, &bid).await {
+            return Some(m);
+        }
+    }
+
+    None
+}
+
+/// 查找当前备份目标中的最新 manifest：优先比较启用目标（WebDAV / 本地）
+async fn find_latest_backup_manifest(
+    state: &Arc<AppState>,
+    save_name: &str,
+    upload_webdav: bool,
+    local_backup_dir: &str,
+) -> Option<ManifestV1> {
+    let remote_latest = if upload_webdav {
+        find_latest_remote_manifest(state, save_name).await
+    } else {
+        None
+    };
+
+    let local_latest = find_latest_local_manifest(local_backup_dir, save_name);
+
+    match (remote_latest, local_latest) {
+        (Some(r), Some(l)) => {
+            let r_time = chrono::DateTime::parse_from_rfc3339(&r.created_at).ok();
+            let l_time = chrono::DateTime::parse_from_rfc3339(&l.created_at).ok();
+            match (r_time, l_time) {
+                (Some(rt), Some(lt)) => {
+                    if rt >= lt { Some(r) } else { Some(l) }
+                }
+                _ => {
+                    if r.created_at >= l.created_at { Some(r) } else { Some(l) }
+                }
+            }
+        }
+        (Some(r), None) => Some(r),
+        (None, Some(l)) => Some(l),
+        (None, None) => None,
+    }
+}
+
 // ── 备份任务 ──────────────────────────────────────────────────
 
 /// 执行完整备份流程：流式读文件+SHA256 → 流式压缩 → 分段加密（可选）→ 上传 → 写 manifest
@@ -201,6 +309,27 @@ pub async fn run_backup_task(
         data
     };
     let original_size = raw_data.len() as u64;
+    let original_sha = hex::encode(hasher.finalize());
+
+    // 无变化跳过：与该存档最新备份 original_sha256 相同则直接结束
+    if let Some(prev) = find_latest_backup_manifest(
+        &state,
+        &req.save_name,
+        req.upload_webdav,
+        &req.local_backup_dir,
+    ).await {
+        if prev.original_sha256 == original_sha {
+            info!(
+                "[backup:{}] unchanged, skip backup: current_sha={} latest_backup_id={} latest_created_at={}",
+                task_id,
+                original_sha,
+                prev.backup_id,
+                prev.created_at
+            );
+            emit_progress(&app, &task_id, "done", 100, 0, 0, "存档无变化，无需备份", 0);
+            return Ok(());
+        }
+    }
 
     // 压缩（可选）
     if req.use_compression {
@@ -213,7 +342,6 @@ pub async fn run_backup_task(
         payload_data = raw_data;
     }
 
-    let original_sha = hex::encode(hasher.finalize());
     info!("[backup:{}] streamed {} → {} bytes, sha256={}", task_id, original_size, payload_data.len(), original_sha);
 
     // 3. 分段 AES-256-GCM 加密（可选）
